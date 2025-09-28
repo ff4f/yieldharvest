@@ -1,0 +1,200 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// User model for suppliers, investors, and agents
+model User {
+  id          String   @id @default(cuid())
+  email       String   @unique
+  name        String
+  role        String   // UserRole: SUPPLIER, INVESTOR, AGENT, ADMIN
+  hederaAccountId String? // Hedera account ID for wallet integration
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  supplierInvoices Invoice[] @relation("SupplierInvoices")
+  investorFundings Funding[] @relation("InvestorFundings")
+  agentInvoices    Invoice[] @relation("AgentInvoices")
+
+  @@map("users")
+}
+
+// UserRole enum replaced with String for SQLite compatibility
+// Valid values: SUPPLIER, INVESTOR, AGENT, ADMIN
+
+// Invoice model - each invoice is minted as NFT on Hedera
+model Invoice {
+  id              String        @id @default(cuid())
+  invoiceNumber   String        @unique
+  supplierId      String
+  buyerId         String?       // ID of the buyer/customer
+  agentId         String?
+  amount          Float         // Decimal amount stored as Float for SQLite
+  currency        String        @default("HBAR") // Currency code (HBAR, USD, etc.)
+  dueDate         DateTime
+  status          String        @default("ISSUED") // InvoiceStatus: ISSUED, FUNDED, PAID, OVERDUE, CANCELLED
+  description     String?
+  
+  // Hedera-specific fields for on-chain proof
+  nftTokenId      String?       // HTS NFT Token ID
+  nftSerialNumber String?       // NFT Serial Number
+  fileId          String?       // HFS File ID for PDF document
+  fileHash        String?       // Hash of the uploaded file
+  topicId         String?       // HCS Topic ID for status updates
+  
+  // Metadata
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relations
+  supplier        User          @relation("SupplierInvoices", fields: [supplierId], references: [id])
+  agent           User?         @relation("AgentInvoices", fields: [agentId], references: [id])
+  events          InvoiceEvent[]
+  fundings        Funding[]
+
+  @@map("invoices")
+}
+
+// InvoiceStatus enum replaced with String for SQLite compatibility
+// Valid values: ISSUED, FUNDED, PAID, OVERDUE, CANCELLED
+
+// Invoice events - recorded on Hedera Consensus Service (HCS)
+model InvoiceEvent {
+  id              String            @id @default(cuid())
+  invoiceId       String
+  eventType       String            // InvoiceEventType: CREATED, NFT_MINTED, FILE_UPLOADED, FUNDING_REQUESTED, FUNDED, PAYMENT_RECEIVED, OVERDUE, CANCELLED
+  description     String?
+  metadata        String?           // JSON string for SQLite compatibility
+  
+  // Hedera-specific fields
+  hcsMessageId    String?           // HCS Message ID
+  hcsTimestamp    DateTime?         // HCS Consensus timestamp
+  transactionId   String?           // Hedera transaction ID
+  
+  createdAt       DateTime          @default(now())
+
+  // Relations
+  invoice         Invoice           @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@map("invoice_events")
+}
+
+// InvoiceEventType enum replaced with String for SQLite compatibility
+// Valid values: CREATED, NFT_MINTED, FILE_UPLOADED, FUNDING_REQUESTED, FUNDED, PAYMENT_RECEIVED, OVERDUE, CANCELLED
+
+// Investor model for those who fund invoices
+model Investor {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  availableBalance Float    @default(0)    // Decimal stored as Float for SQLite
+  totalInvested   Float    @default(0)    // Decimal stored as Float for SQLite
+  totalReturns    Float    @default(0)    // Decimal stored as Float for SQLite
+  riskTolerance   String    @default("MEDIUM") // RiskLevel: LOW, MEDIUM, HIGH
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  fundings        Funding[]
+
+  @@map("investors")
+}
+
+// RiskLevel enum replaced with String for SQLite compatibility
+// Valid values: LOW, MEDIUM, HIGH
+
+// Funding model - tracks investor funding of invoices
+model Funding {
+  id              String        @id @default(cuid())
+  invoiceId       String
+  investorId      String
+  amount          Float         // Decimal amount stored as Float for SQLite
+  interestRate    Float         @default(0.05) // Interest rate stored as Float for SQLite (e.g., 0.0500 for 5%)
+  expectedReturn  Float?        // Expected return stored as Float for SQLite
+  status          String        @default("ACTIVE") // FundingStatus: ACTIVE, RELEASED, REFUNDED, CANCELLED
+  
+  // Smart Contract Escrow fields
+  escrowId        String?       // Smart contract escrow ID
+  transactionHash String?       // Initial funding transaction hash
+  releaseTransactionHash String? // Escrow release transaction hash
+  refundTransactionHash String?  // Escrow refund transaction hash
+  
+  // Legacy Hedera fields (for backward compatibility)
+  escrowAccountId String?       // Hedera account ID for escrow
+  scheduledTxId   String?       // Scheduled transaction ID
+  contractId      String?       // Smart contract ID (if using contracts)
+  transactionId   String?       // Funding transaction ID
+  
+  fundedAt        DateTime?
+  releasedAt      DateTime?     // When escrow was released
+  refundedAt      DateTime?     // When escrow was refunded
+  settledAt       DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relations
+  invoice         Invoice       @relation(fields: [invoiceId], references: [id])
+  investor        User          @relation("InvestorFundings", fields: [investorId], references: [id])
+  investorProfile Investor      @relation(fields: [investorId], references: [userId])
+
+  @@map("fundings")
+}
+
+// FundingStatus enum replaced with String for SQLite compatibility
+// Valid values: ACTIVE, RELEASED, REFUNDED, CANCELLED
+
+// Deal Topic model - tracks HCS topics for milestone tracking
+model DealTopic {
+  id              String   @id @default(cuid())
+  topicId         String   @unique
+  invoiceKey      String   @unique // tokenId-serialNumber or invoiceId
+  transactionId   String?  // Topic creation transaction ID
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("deal_topics")
+}
+
+model Milestone {
+  id                String   @id @default(cuid())
+  tokenId           String
+  serial            String
+  milestone         String   // MilestoneType enum value
+  topicId           String
+  sequenceNumber    String
+  transactionId     String
+  consensusTimestamp String
+  fileHash          String?
+  agentId           String?
+  location          String?
+  notes             String?
+  documentUrl       String?
+  metadata          String?  // JSON string
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([tokenId, serial, milestone])
+  @@map("milestones")
+}
+
+// System configuration for Hedera network settings
+model SystemConfig {
+  id              String   @id @default(cuid())
+  key             String   @unique
+  value           String
+  description     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("system_config")
+}
