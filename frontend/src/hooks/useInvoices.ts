@@ -7,7 +7,6 @@ import {
   CreateInvoiceRequest,
   CreateInvoiceResponse,
   UpdateInvoiceRequest,
-  PaginatedResponse,
   InvoiceFilters,
 } from '@/types/api';
 import { invoiceApi } from '@/services/api';

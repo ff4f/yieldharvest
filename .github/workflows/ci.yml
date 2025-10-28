@@ -1,0 +1,178 @@
+name: YieldHarvest CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: yieldharvest_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          cd frontend && npm ci
+          cd ../backend && npm ci
+
+      - name: Setup environment
+        run: |
+          cp .env.example .env
+          echo "DATABASE_URL=postgresql://postgres:postgres@localhost:5432/yieldharvest_test" >> .env
+          echo "HEDERA_NETWORK=testnet" >> .env
+          echo "HEDERA_ACCOUNT_ID=${{ secrets.HEDERA_ACCOUNT_ID }}" >> .env
+          echo "HEDERA_PRIVATE_KEY=${{ secrets.HEDERA_PRIVATE_KEY }}" >> .env
+
+      - name: Run database migrations
+        run: |
+          cd backend
+          npx prisma migrate deploy
+          npx prisma generate
+
+      - name: Run backend tests
+        run: |
+          cd backend
+          npm test
+
+      - name: Run frontend tests
+        run: |
+          cd frontend
+          npm test -- --coverage
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm run build
+
+      - name: Build backend
+        run: |
+          cd backend
+          npm run build
+
+      - name: Start services for E2E tests
+        run: |
+          cd backend && npm run dev &
+          cd frontend && npm run dev &
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/yieldharvest_test
+
+      - name: Wait for services to be healthy
+        run: |
+          node scripts/wait-for-health.js --verbose --timeout 120000
+        env:
+          FRONTEND_URL: http://localhost:5173
+          BACKEND_URL: http://localhost:3001
+
+      - name: Install Playwright browsers
+        run: |
+          cd frontend
+          npx playwright install --with-deps
+
+      - name: Run E2E tests
+        run: |
+          cd frontend
+          npm run test:e2e
+        env:
+          CI: true
+          FRONTEND_URL: http://localhost:5173
+          BACKEND_URL: http://localhost:3001
+
+      - name: Upload E2E test results
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-test-results
+          path: |
+            frontend/test-results/
+            frontend/playwright-report/
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          directory: ./frontend/coverage
+          flags: frontend
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run security audit
+        run: |
+          npm audit --audit-level moderate
+          cd frontend && npm audit --audit-level moderate
+          cd ../backend && npm audit --audit-level moderate
+
+      - name: Run dependency check
+        run: |
+          npx depcheck
+          cd frontend && npx depcheck
+          cd ../backend && npx depcheck
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          cd frontend && npm ci
+          cd ../backend && npm ci
+
+      - name: Run ESLint
+        run: |
+          cd frontend && npm run lint
+          cd ../backend && npm run lint
+
+      - name: Run Prettier check
+        run: |
+          cd frontend && npm run format:check
+          cd ../backend && npm run format:check
+
+      - name: Run TypeScript check
+        run: |
+          cd frontend && npm run type-check
+          cd ../backend && npm run type-check

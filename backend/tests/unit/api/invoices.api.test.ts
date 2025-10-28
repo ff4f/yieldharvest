@@ -3,9 +3,19 @@ import { FastifyInstance } from 'fastify';
 import { build } from '../../../src/app';
 import { PrismaClient } from '@prisma/client';
 import jwt from 'jsonwebtoken';
+import { generateAccessToken, UserRole, getUserPermissions } from '../../../src/middleware/auth';
+import { invoiceDataMerger, InvoiceListResponse } from '../../../src/services/invoiceDataMerger';
 
-// Mock Hedera Service
+// Mock Hedera service
 jest.mock('../../../src/services/hedera');
+
+// Mock invoiceDataMerger
+jest.mock('../../../src/services/invoiceDataMerger', () => ({
+  invoiceDataMerger: {
+    getEnrichedInvoices: jest.fn(),
+    getDetailedInvoice: jest.fn(),
+  },
+}));
 
 // Mock Prisma
 jest.mock('@prisma/client');
@@ -19,10 +29,11 @@ describe('Invoice API Integration Tests', () => {
   let adminToken: string;
 
   const mockInvoice = {
-    id: 'inv_test_123',
+    id: 'cmg5835f2000312tpzdi5nkxw',
+    supplierId: 'supplier_123',
     supplierName: 'Test Supplier',
     supplierEmail: 'supplier@test.com',
-    amount: 10000,
+    amount: 1000,
     currency: 'USD',
     description: 'Test Invoice Description',
     status: 'ISSUED',
@@ -55,6 +66,10 @@ describe('Invoice API Integration Tests', () => {
         create: jest.fn(),
         findMany: jest.fn(),
       },
+      invoiceEvent: {
+        create: jest.fn(),
+        findMany: jest.fn(),
+      },
     };
     
     MockPrismaClient.mockImplementation(() => mockPrisma);
@@ -63,33 +78,47 @@ describe('Invoice API Integration Tests', () => {
     app = await build({ logger: false });
     await app.ready();
 
-    // Create test tokens
-    const jwtSecret = process.env.JWT_SECRET || 'test-secret';
-    supplierToken = jwt.sign(
-      { userId: 'supplier_123', role: 'SUPPLIER', email: 'supplier@test.com' },
-      jwtSecret
-    );
-    investorToken = jwt.sign(
-      { userId: 'investor_123', role: 'INVESTOR', email: 'investor@test.com' },
-      jwtSecret
-    );
-    adminToken = jwt.sign(
-      { userId: 'admin_123', role: 'ADMIN', email: 'admin@test.com' },
-      jwtSecret
-    );
+    // Create test tokens using generateAccessToken
+    const supplierUser = {
+      id: 'supplier_123',
+      accountId: '0.0.123456',
+      email: 'supplier@test.com',
+      role: UserRole.SUPPLIER,
+      permissions: getUserPermissions(UserRole.SUPPLIER),
+    };
+    
+    const investorUser = {
+      id: 'investor_123',
+      accountId: '0.0.123457',
+      email: 'investor@test.com',
+      role: UserRole.INVESTOR,
+      permissions: getUserPermissions(UserRole.INVESTOR),
+    };
+    
+    const adminUser = {
+      id: 'admin_123',
+      accountId: '0.0.123458',
+      email: 'admin@test.com',
+      role: UserRole.ADMIN,
+      permissions: getUserPermissions(UserRole.ADMIN),
+    };
+
+    supplierToken = await generateAccessToken(supplierUser);
+    investorToken = await generateAccessToken(investorUser);
+    adminToken = await generateAccessToken(adminUser);
   });
 
   afterEach(async () => {
     await app.close();
   });
 
-  describe('POST /api/invoices', () => {
+  describe('POST /api/invoices/simple', () => {
     const validInvoiceData = {
       supplierName: 'Test Supplier',
       supplierEmail: 'supplier@test.com',
-      amount: 10000,
+      amount: 1000,
       currency: 'USD',
-      description: 'Test Invoice',
+      description: 'Test invoice',
       dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
     };
 
@@ -98,10 +127,9 @@ describe('Invoice API Integration Tests', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/api/invoices',
+        url: '/api/invoices/simple',
         headers: {
           authorization: `Bearer ${supplierToken}`,
-          'content-type': 'application/json',
         },
         payload: validInvoiceData,
       });
@@ -117,7 +145,7 @@ describe('Invoice API Integration Tests', () => {
     it('should reject request without authentication', async () => {
       const response = await app.inject({
         method: 'POST',
-        url: '/api/invoices',
+        url: '/api/invoices/simple',
         headers: {
           'content-type': 'application/json',
         },
@@ -135,7 +163,7 @@ describe('Invoice API Integration Tests', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/api/invoices',
+        url: '/api/invoices/simple',
         headers: {
           authorization: `Bearer ${supplierToken}`,
           'content-type': 'application/json',
@@ -154,7 +182,7 @@ describe('Invoice API Integration Tests', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/api/invoices',
+        url: '/api/invoices/simple',
         headers: {
           authorization: `Bearer ${supplierToken}`,
           'content-type': 'application/json',
@@ -174,8 +202,17 @@ describe('Invoice API Integration Tests', () => {
     ];
 
     it('should fetch invoices with pagination', async () => {
-      mockPrisma.invoice.findMany.mockResolvedValue(mockInvoices);
-      mockPrisma.invoice.count.mockResolvedValue(3);
+      const mockResult = {
+        data: mockInvoices,
+        pagination: {
+          page: 1,
+          limit: 10,
+          total: 3,
+          pages: 1,
+        },
+      };
+      
+      (invoiceDataMerger.getEnrichedInvoices as jest.Mock).mockResolvedValue(mockResult);
 
       const response = await app.inject({
         method: 'GET',
@@ -194,8 +231,17 @@ describe('Invoice API Integration Tests', () => {
 
     it('should filter by status', async () => {
       const fundedInvoices = mockInvoices.filter(inv => inv.status === 'FUNDED');
-      mockPrisma.invoice.findMany.mockResolvedValue(fundedInvoices);
-      mockPrisma.invoice.count.mockResolvedValue(1);
+      const mockResult = {
+        data: fundedInvoices,
+        pagination: {
+          page: 1,
+          limit: 10,
+          total: 1,
+          pages: 1,
+        },
+      };
+      
+      (invoiceDataMerger.getEnrichedInvoices as jest.Mock).mockResolvedValue(mockResult);
 
       const response = await app.inject({
         method: 'GET',
@@ -223,7 +269,14 @@ describe('Invoice API Integration Tests', () => {
 
   describe('GET /api/invoices/:id', () => {
     it('should fetch single invoice by ID', async () => {
-      mockPrisma.invoice.findUnique.mockResolvedValue(mockInvoice);
+      const mockInvoiceWithRelations = {
+        ...mockInvoice,
+        supplier: { id: 'supplier-1', name: 'Test Supplier', email: 'supplier@test.com' },
+        agent: null,
+        events: [],
+        fundings: [],
+      };
+      mockPrisma.invoice.findUnique.mockResolvedValue(mockInvoiceWithRelations);
 
       const response = await app.inject({
         method: 'GET',
@@ -235,8 +288,8 @@ describe('Invoice API Integration Tests', () => {
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      expect(body.id).toBe(mockInvoice.id);
-      expect(body.supplierName).toBe(mockInvoice.supplierName);
+      expect(body.data.id).toBe(mockInvoice.id);
+      expect(body.data.supplier.name).toBe('Test Supplier');
     });
 
     it('should return 404 for non-existent invoice', async () => {
@@ -244,7 +297,7 @@ describe('Invoice API Integration Tests', () => {
 
       const response = await app.inject({
         method: 'GET',
-        url: '/api/invoices/non-existent-id',
+        url: '/api/invoices/cmg5835f2000312tpzdi5nkxy',
         headers: {
           authorization: `Bearer ${supplierToken}`,
         },
@@ -271,23 +324,23 @@ describe('Invoice API Integration Tests', () => {
 
       const response = await app.inject({
         method: 'PATCH',
-        url: `/api/invoices/${mockInvoice.id}/status`,
+        url: `/api/invoices/${mockInvoice.id}`,
         headers: {
-          authorization: `Bearer ${investorToken}`,
+          authorization: `Bearer ${supplierToken}`,
           'content-type': 'application/json',
         },
-        payload: { status: 'FUNDED', transactionId: '0.0.123@1234567890.123456789' },
+        payload: { status: 'FUNDED' },
       });
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      expect(body.status).toBe('FUNDED');
+      expect(body.data.status).toBe('FUNDED');
     });
 
     it('should require authentication', async () => {
       const response = await app.inject({
         method: 'PATCH',
-        url: `/api/invoices/${mockInvoice.id}/status`,
+        url: `/api/invoices/${mockInvoice.id}`,
         headers: {
           'content-type': 'application/json',
         },
@@ -316,16 +369,16 @@ describe('Invoice API Integration Tests', () => {
 
   describe('POST /api/invoices/:id/fund', () => {
     const fundingData = {
-      investorName: 'Test Investor',
-      investorEmail: 'investor@test.com',
       amount: 8000,
       walletAddress: '0.0.123456',
+      transactionMemo: 'Test funding transaction',
     };
 
     it('should fund invoice successfully', async () => {
       const fundedInvoice = { ...mockInvoice, status: 'FUNDED' };
       mockPrisma.invoice.findUnique.mockResolvedValue(mockInvoice);
       mockPrisma.invoice.update.mockResolvedValue(fundedInvoice);
+      mockPrisma.invoiceEvent.create.mockResolvedValue({});
 
       const response = await app.inject({
         method: 'POST',
@@ -336,10 +389,10 @@ describe('Invoice API Integration Tests', () => {
         },
         payload: fundingData,
       });
-
+      
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      expect(body.status).toBe('FUNDED');
+      expect(body.data.status).toBe('FUNDED');
     });
 
     it('should require authentication', async () => {
@@ -380,7 +433,7 @@ describe('Invoice API Integration Tests', () => {
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      expect(body.status).toBe('PAID');
+      expect(body.data.status).toBe('PAID');
     });
 
     it('should require authentication', async () => {

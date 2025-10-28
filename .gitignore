@@ -69,8 +69,8 @@ jspm_packages/
 .cache
 .parcel-cache
 
-# Vite
-vite.config.*s.*
+# Optional Jest cache
+.jest-cache/
 
 # Next.js build output
 .next
@@ -113,6 +113,7 @@ logs
 *.db
 *.sqlite
 *.sqlite3
+*.db-journal
 
 # Uploads
 uploads/
@@ -130,10 +131,16 @@ uploads/
 /backend/deployments/
 /backend/playwright-report/
 /backend/test-results/
+/backend/test-reports/
+
+# Frontend test reports
+/frontend/playwright-report/
+/frontend/test-results/
 
 # Generic test reports (root)
 /playwright-report/
 /test-results/
+/test-reports/
 
 # Environment files across subfolders
 **/.env

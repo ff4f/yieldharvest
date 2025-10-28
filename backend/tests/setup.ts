@@ -1,11 +1,15 @@
 import { jest } from '@jest/globals';
+import { config } from 'dotenv';
+
+// Configure dotenv for tests
+config({ path: '.env.test' });
 
 // Mock environment variables
 process.env.NODE_ENV = 'test';
 process.env.PORT = '3001';
 process.env.HOST = '0.0.0.0';
 process.env.LOG_LEVEL = 'silent';
-process.env.DATABASE_URL = 'postgresql://test:test@localhost:5432/test_db';
+process.env.DATABASE_URL = 'file:./prisma/test.db';
 process.env.JWT_SECRET = 'test-jwt-secret-key-for-testing-only';
 process.env.HEDERA_NETWORK = 'testnet';
 process.env.MIRROR_NODE_URL = 'https://testnet.mirrornode.hedera.com';

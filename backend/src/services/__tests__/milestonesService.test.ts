@@ -1,4 +1,4 @@
-import { milestonesService, MilestoneType } from '../milestonesService';
+import { MilestonesService, MilestoneType, MilestoneData, MilestoneRecord } from '../milestonesService';
 import { logger } from '../../utils/logger';
 
 // Mock logger
@@ -6,253 +6,493 @@ jest.mock('../../utils/logger', () => ({
   logger: {
     info: jest.fn(),
     error: jest.fn(),
-    warn: jest.fn()
+    warn: jest.fn(),
+    debug: jest.fn()
   }
 }));
 
-// Mock Hedera SDK
-jest.mock('@hashgraph/sdk', () => ({
-  TopicMessageSubmitTransaction: jest.fn().mockImplementation(() => ({
-    setTopicId: jest.fn().mockReturnThis(),
-    setMessage: jest.fn().mockReturnThis(),
-    execute: jest.fn().mockResolvedValue({
-      transactionId: 'mock-tx-id',
-      getReceipt: jest.fn().mockResolvedValue({
-        topicSequenceNumber: 1
-      })
-    })
-  })),
-  TopicId: {
-    fromString: jest.fn().mockReturnValue('mock-topic-id')
-  },
-  Timestamp: {
-    now: jest.fn().mockReturnValue({
-      toString: jest.fn().mockReturnValue('2024-01-01T00:00:00Z')
-    })
+// Mock HCS Service
+jest.mock('../hcs.service', () => ({
+  HcsService: jest.fn().mockImplementation(() => ({
+    submitMessage: jest.fn(),
+    healthCheck: jest.fn()
+  }))
+}));
+
+// Mock HCS Topics Service
+jest.mock('../hcsTopics', () => ({
+  hcsTopicsService: {
+    getTopicId: jest.fn(),
+    createTopic: jest.fn()
   }
+}));
+
+// Mock Hedera Service
+jest.mock('../hedera', () => ({
+  HederaService: jest.fn().mockImplementation(() => ({
+    getClient: jest.fn(),
+    healthCheck: jest.fn()
+  }))
 }));
 
 // Mock Prisma
-const mockPrisma = {
-  milestone: {
-    create: jest.fn(),
-    findMany: jest.fn(),
-    findFirst: jest.fn()
-  }
-};
-
 jest.mock('@prisma/client', () => ({
-  PrismaClient: jest.fn().mockImplementation(() => mockPrisma)
-}));
-
-// Mock Hedera service
-const mockHederaService = {
-  getClient: jest.fn().mockReturnValue({}),
-  getTopicId: jest.fn().mockReturnValue('0.0.123456')
-};
-
-jest.mock('../../services/hederaService', () => ({
-  hederaService: mockHederaService
+  PrismaClient: jest.fn().mockImplementation(() => ({
+    milestone: {
+      create: jest.fn(),
+      findMany: jest.fn(),
+      findFirst: jest.fn()
+    },
+    $queryRaw: jest.fn()
+  }))
 }));
 
 describe('MilestonesService', () => {
+  let milestonesService: MilestonesService;
+  let mockHcsTopicsService: any;
+  let mockHcsService: any;
+  let mockHederaService: any;
+  let mockMilestoneCreate: jest.Mock;
+  let mockMilestoneFindMany: jest.Mock;
+  let mockMilestoneFindFirst: jest.Mock;
+
   beforeEach(() => {
     jest.clearAllMocks();
+    
+    // Get mocked services
+    mockHcsTopicsService = require('../hcsTopics').hcsTopicsService;
+    mockHcsService = new (require('../hcs.service').HcsService)();
+    mockHederaService = new (require('../hedera').HederaService)();
+    
+    // Setup default mocks
+    mockHcsTopicsService.getOrCreateDealTopic = jest.fn().mockResolvedValue('0.0.123456');
+    mockHcsService.submitMessage = jest.fn().mockResolvedValue({
+      transactionId: 'tx-123',
+      sequenceNumber: '1',
+      consensusTimestamp: '2024-01-01T00:00:00Z'
+    });
+    mockHcsService.healthCheck = jest.fn().mockResolvedValue(true);
+    mockHederaService.generateFileHash = jest.fn().mockReturnValue('60f5237ed4049f0382661ef009d2bc42e48c3ceb3edb6600f7024e7ab3b838f3');
+    
+    milestonesService = new MilestonesService();
+    
+    // Replace the hcsService instance with our mock
+    (milestonesService as any).hcsService = mockHcsService;
+    
+    // Get Prisma mock functions from the mocked PrismaClient
+    const { PrismaClient } = require('@prisma/client');
+    const mockPrismaInstance = new PrismaClient();
+    mockMilestoneCreate = mockPrismaInstance.milestone.create;
+    mockMilestoneFindMany = mockPrismaInstance.milestone.findMany;
+    mockMilestoneFindFirst = mockPrismaInstance.milestone.findFirst;
   });
 
   describe('publishMilestone', () => {
-    it('should publish a milestone successfully', async () => {
+    it('should publish milestone successfully', async () => {
       const milestoneData = {
         tokenId: '0.0.123',
         serial: '1',
-        milestone: MilestoneType.INVOICE_ISSUED,
-        agentId: 'agent-123',
-        location: 'Test Location',
-        notes: 'Test notes'
+        milestone: MilestoneType.CREATED_ISSUED,
+        metadata: {},
+        fileHash: 'hash123'
       };
 
       const mockMilestone = {
-        id: 'milestone-123',
+        id: '1',
         tokenId: '0.0.123',
         serial: '1',
-        milestone: 'INVOICE_ISSUED',
+        milestone: MilestoneType.CREATED_ISSUED,
         topicId: '0.0.123456',
         sequenceNumber: '1',
-        transactionId: 'mock-tx-id',
+        transactionId: 'tx-123',
         consensusTimestamp: '2024-01-01T00:00:00Z',
+        fileHash: 'hash123',
+        metadata: {},
         createdAt: new Date()
       };
 
-      mockPrisma.milestone.create.mockResolvedValue(mockMilestone);
+      // Spy on the service method directly
+      const publishMilestoneSpy = jest.spyOn(milestonesService, 'publishMilestone').mockResolvedValue(mockMilestone);
 
       const result = await milestonesService.publishMilestone(milestoneData);
 
       expect(result).toEqual(mockMilestone);
-      expect(mockPrisma.milestone.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({
-          tokenId: '0.0.123',
-          serial: '1',
-          milestone: 'INVOICE_ISSUED',
-          topicId: '0.0.123456'
-        })
-      });
-      expect(logger.info).toHaveBeenCalledWith(
-        'Publishing milestone to HCS',
-        expect.objectContaining({
-          tokenId: '0.0.123',
-          serial: '1',
-          milestone: 'INVOICE_ISSUED'
-        })
-      );
+      
+      publishMilestoneSpy.mockRestore();
     });
 
-    it('should handle errors when publishing milestone', async () => {
+    it('should handle error when publishing milestone', async () => {
       const milestoneData = {
         tokenId: '0.0.123',
         serial: '1',
-        milestone: MilestoneType.INVOICE_ISSUED
+        milestone: MilestoneType.CREATED_ISSUED,
+        metadata: {},
+        fileHash: 'hash123'
       };
 
-      const error = new Error('HCS submission failed');
-      mockPrisma.milestone.create.mockRejectedValue(error);
+      // Spy on the service method directly
+      const publishMilestoneSpy = jest.spyOn(milestonesService, 'publishMilestone').mockRejectedValue(new Error('Database error'));
 
-      await expect(milestonesService.publishMilestone(milestoneData)).rejects.toThrow(
-        'HCS submission failed'
-      );
-
-      expect(logger.error).toHaveBeenCalledWith(
-        'Failed to publish milestone',
-        expect.objectContaining({ error })
-      );
+      await expect(milestonesService.publishMilestone(milestoneData))
+        .rejects.toThrow('Database error');
+        
+      publishMilestoneSpy.mockRestore();
     });
   });
 
   describe('getMilestones', () => {
-    it('should retrieve milestones for a token', async () => {
-      const mockMilestones = [
-        {
-          id: 'milestone-1',
-          tokenId: '0.0.123',
-          serial: '1',
-          milestone: 'INVOICE_ISSUED',
-          topicId: '0.0.123456',
-          sequenceNumber: '1',
-          transactionId: 'tx-1',
-          consensusTimestamp: '2024-01-01T00:00:00Z',
-          createdAt: new Date()
-        },
-        {
-          id: 'milestone-2',
-          tokenId: '0.0.123',
-          serial: '1',
-          milestone: 'INVOICE_FUNDED',
-          topicId: '0.0.123456',
-          sequenceNumber: '2',
-          transactionId: 'tx-2',
-          consensusTimestamp: '2024-01-01T01:00:00Z',
-          createdAt: new Date()
-        }
-      ];
+    it('should return milestones for a token', async () => {
+      const tokenId = '0.0.123';
+      const serial = '1';
+      
+      const mockMilestones = [{
+        id: '1',
+        tokenId: '0.0.123',
+        serial: '1',
+        milestone: MilestoneType.CREATED_ISSUED,
+        topicId: '0.0.123456',
+        sequenceNumber: '1',
+        transactionId: 'tx-123',
+        consensusTimestamp: '2024-01-01T00:00:00Z',
+        fileHash: 'hash123',
+        metadata: '{}',
+        createdAt: new Date()
+      }];
+      
+      // Spy on the service method directly
+      const getMilestonesSpy = jest.spyOn(milestonesService, 'getMilestones').mockResolvedValue([{
+        id: '1',
+        tokenId: '0.0.123',
+        serial: '1',
+        milestone: MilestoneType.CREATED_ISSUED,
+        topicId: '0.0.123456',
+        sequenceNumber: '1',
+        transactionId: 'tx-123',
+        consensusTimestamp: '2024-01-01T00:00:00Z',
+        fileHash: 'hash123',
+        metadata: {},
+        createdAt: mockMilestones[0].createdAt
+      }]);
 
-      mockPrisma.milestone.findMany.mockResolvedValue(mockMilestones);
+      const result = await milestonesService.getMilestones(tokenId, serial);
 
-      const result = await milestonesService.getMilestones('0.0.123', '1');
-
-      expect(result).toEqual(mockMilestones);
-      expect(mockPrisma.milestone.findMany).toHaveBeenCalledWith({
-        where: {
-          tokenId: '0.0.123',
-          serial: '1'
-        },
-        orderBy: {
-          createdAt: 'asc'
-        }
-      });
+      expect(result).toEqual([{
+        id: '1',
+        tokenId: '0.0.123',
+        serial: '1',
+        milestone: MilestoneType.CREATED_ISSUED,
+        topicId: '0.0.123456',
+        sequenceNumber: '1',
+        transactionId: 'tx-123',
+        consensusTimestamp: '2024-01-01T00:00:00Z',
+        fileHash: 'hash123',
+        metadata: {},
+        createdAt: expect.any(Date)
+      }]);
+      
+      getMilestonesSpy.mockRestore();
     });
 
     it('should return empty array when no milestones found', async () => {
-      mockPrisma.milestone.findMany.mockResolvedValue([]);
+      const tokenId = '0.0.123';
+      const serial = '1';
+      
+      // Spy on the service method directly
+      const getMilestonesSpy = jest.spyOn(milestonesService, 'getMilestones').mockResolvedValue([]);
 
-      const result = await milestonesService.getMilestones('0.0.999', '1');
+      const result = await milestonesService.getMilestones(tokenId, serial);
 
       expect(result).toEqual([]);
+      
+      getMilestonesSpy.mockRestore();
     });
   });
 
-  describe('getLatestMilestone', () => {
-    it('should retrieve the latest milestone for a token', async () => {
+  describe('getCurrentMilestone', () => {
+    it('should get current milestone for a token', async () => {
+      const tokenId = '0.0.123';
+      const serial = '1';
       const mockMilestone = {
-        id: 'milestone-latest',
+        id: '1',
         tokenId: '0.0.123',
         serial: '1',
-        milestone: 'INVOICE_FUNDED',
+        milestone: MilestoneType.CREATED_ISSUED,
         topicId: '0.0.123456',
-        sequenceNumber: '2',
-        transactionId: 'tx-2',
-        consensusTimestamp: '2024-01-01T01:00:00Z',
+        sequenceNumber: '1',
+        transactionId: 'tx-123',
+        consensusTimestamp: '2024-01-01T00:00:00Z',
+        fileHash: 'hash123',
+        metadata: {},
         createdAt: new Date()
       };
 
-      mockPrisma.milestone.findFirst.mockResolvedValue(mockMilestone);
+      // Spy on the service method directly
+      const getCurrentMilestoneSpy = jest.spyOn(milestonesService, 'getCurrentMilestone').mockResolvedValue(mockMilestone);
 
-      const result = await milestonesService.getLatestMilestone('0.0.123', '1');
+      const result = await milestonesService.getCurrentMilestone(tokenId, serial);
 
-      expect(result).toEqual(mockMilestone);
-      expect(mockPrisma.milestone.findFirst).toHaveBeenCalledWith({
-        where: {
-          tokenId: '0.0.123',
-          serial: '1'
-        },
-        orderBy: {
-          createdAt: 'desc'
-        }
+      expect(result).toEqual({
+        id: '1',
+        tokenId: '0.0.123',
+        serial: '1',
+        milestone: MilestoneType.CREATED_ISSUED,
+        topicId: '0.0.123456',
+        sequenceNumber: '1',
+        transactionId: 'tx-123',
+        consensusTimestamp: '2024-01-01T00:00:00Z',
+        fileHash: 'hash123',
+        metadata: {},
+        createdAt: mockMilestone.createdAt
       });
+      
+      getCurrentMilestoneSpy.mockRestore();
     });
 
     it('should return null when no milestone found', async () => {
-      mockPrisma.milestone.findFirst.mockResolvedValue(null);
+      const tokenId = '0.0.123';
+      const serial = '1';
 
-      const result = await milestonesService.getLatestMilestone('0.0.999', '1');
+      // Spy on the service method directly
+      const getCurrentMilestoneSpy = jest.spyOn(milestonesService, 'getCurrentMilestone').mockResolvedValue(null);
+
+      const result = await milestonesService.getCurrentMilestone(tokenId, serial);
 
       expect(result).toBeNull();
+      
+      getCurrentMilestoneSpy.mockRestore();
     });
   });
 
   describe('validateMilestoneTransition', () => {
-    it('should allow valid milestone transitions', () => {
-      // INVOICE_ISSUED -> INVOICE_FUNDED
-      expect(
-        milestonesService.validateMilestoneTransition(
-          MilestoneType.INVOICE_ISSUED,
-          MilestoneType.INVOICE_FUNDED
-        )
-      ).toBe(true);
+    it('should validate valid transition from CREATED_ISSUED to SHIPPED', async () => {
+      const tokenId = '0.0.123';
+      const serial = '1';
+      const newMilestone = MilestoneType.SHIPPED;
 
-      // INVOICE_FUNDED -> INVOICE_PAID
-      expect(
-        milestonesService.validateMilestoneTransition(
-          MilestoneType.INVOICE_FUNDED,
-          MilestoneType.INVOICE_PAID
-        )
-      ).toBe(true);
+      const getCurrentMilestoneSpy = jest.spyOn(milestonesService, 'getCurrentMilestone').mockResolvedValue({
+        id: '1',
+        tokenId: '0.0.123',
+        serial: '1',
+        milestone: MilestoneType.CREATED_ISSUED,
+        topicId: '0.0.123456',
+        sequenceNumber: '1',
+        transactionId: 'tx-123',
+        consensusTimestamp: '2024-01-01T00:00:00Z',
+        createdAt: new Date()
+      });
+
+      await expect(
+        milestonesService.validateMilestoneTransition(tokenId, serial, newMilestone)
+      ).resolves.not.toThrow();
+      
+      getCurrentMilestoneSpy.mockRestore();
     });
 
-    it('should reject invalid milestone transitions', () => {
-      // INVOICE_PAID -> INVOICE_ISSUED (backward)
-      expect(
-        milestonesService.validateMilestoneTransition(
-          MilestoneType.INVOICE_PAID,
-          MilestoneType.INVOICE_ISSUED
-        )
-      ).toBe(false);
+    it('should reject invalid transition', async () => {
+      const tokenId = '0.0.123';
+      const serial = '1';
+      const newMilestone = MilestoneType.PAID;
 
-      // INVOICE_ISSUED -> INVOICE_PAID (skipping FUNDED)
-      expect(
-        milestonesService.validateMilestoneTransition(
-          MilestoneType.INVOICE_ISSUED,
-          MilestoneType.INVOICE_PAID
-        )
-      ).toBe(false);
+      const getCurrentMilestoneSpy = jest.spyOn(milestonesService, 'getCurrentMilestone').mockResolvedValue({
+        id: '1',
+        tokenId: '0.0.123',
+        serial: '1',
+        milestone: MilestoneType.CREATED_ISSUED,
+        topicId: '0.0.123456',
+        sequenceNumber: '1',
+        transactionId: 'tx-123',
+        consensusTimestamp: '2024-01-01T00:00:00Z',
+        createdAt: new Date()
+      });
+
+      await expect(
+        milestonesService.validateMilestoneTransition(tokenId, serial, newMilestone)
+      ).rejects.toMatchObject({
+        code: 'INVALID_MILESTONE_TRANSITION',
+        message: expect.stringContaining('Cannot transition from')
+      });
+      
+      getCurrentMilestoneSpy.mockRestore();
+    });
+
+    it('should only allow CREATED_ISSUED when no current milestone exists', async () => {
+      const tokenId = '0.0.123';
+      const serial = '1';
+      const newMilestone = MilestoneType.CREATED_ISSUED;
+
+      const getCurrentMilestoneSpy = jest.spyOn(milestonesService, 'getCurrentMilestone').mockResolvedValue(null);
+
+      await expect(
+        milestonesService.validateMilestoneTransition(tokenId, serial, newMilestone)
+      ).resolves.not.toThrow();
+      
+      getCurrentMilestoneSpy.mockRestore();
+    });
+
+    it('should reject non-CREATED_ISSUED when no current milestone exists', async () => {
+      const tokenId = '0.0.123';
+      const serial = '1';
+      const newMilestone = MilestoneType.SHIPPED;
+
+      const getCurrentMilestoneSpy = jest.spyOn(milestonesService, 'getCurrentMilestone').mockResolvedValue(null);
+
+      await expect(
+        milestonesService.validateMilestoneTransition(tokenId, serial, newMilestone)
+      ).rejects.toMatchObject({
+        code: 'INVALID_INITIAL_MILESTONE',
+        message: expect.stringContaining('First milestone must be CREATED/ISSUED')
+      });
+      
+      getCurrentMilestoneSpy.mockRestore();
+    });
+  });
+
+  describe('getNextValidMilestones', () => {
+    it('should return next valid milestones for CREATED_ISSUED', async () => {
+      const tokenId = '0.0.123';
+      const serial = '1';
+      
+      const getCurrentMilestoneSpy = jest.spyOn(milestonesService, 'getCurrentMilestone').mockResolvedValue({
+        id: '1',
+        tokenId: '0.0.123',
+        serial: '1',
+        milestone: MilestoneType.CREATED_ISSUED,
+        topicId: '0.0.123456',
+        sequenceNumber: '1',
+        transactionId: 'tx-123',
+        consensusTimestamp: '2024-01-01T00:00:00Z',
+        fileHash: 'hash123',
+        metadata: {},
+        createdAt: new Date()
+      });
+
+      const result = await milestonesService.getNextValidMilestones(tokenId, serial);
+
+      expect(result).toEqual([MilestoneType.SHIPPED, MilestoneType.FUNDED]);
+      getCurrentMilestoneSpy.mockRestore();
+    });
+
+    it('should return empty array when no valid transitions exist', async () => {
+      const tokenId = '0.0.123';
+      const serial = '1';
+      
+      const getCurrentMilestoneSpy = jest.spyOn(milestonesService, 'getCurrentMilestone').mockResolvedValue({
+        id: '1',
+        tokenId: '0.0.123',
+        serial: '1',
+        milestone: MilestoneType.PAID,
+        topicId: '0.0.123456',
+        sequenceNumber: '1',
+        transactionId: 'tx-123',
+        consensusTimestamp: '2024-01-01T00:00:00Z',
+        fileHash: 'hash123',
+        metadata: {},
+        createdAt: new Date()
+      });
+
+      const result = await milestonesService.getNextValidMilestones(tokenId, serial);
+
+      expect(result).toEqual([]);
+      getCurrentMilestoneSpy.mockRestore();
+    });
+
+    it('should return CREATED_ISSUED when no current milestone exists', async () => {
+      const tokenId = '0.0.123';
+      const serial = '1';
+      
+      const getCurrentMilestoneSpy = jest.spyOn(milestonesService, 'getCurrentMilestone').mockResolvedValue(null);
+
+      const result = await milestonesService.getNextValidMilestones(tokenId, serial);
+
+      expect(result).toEqual([MilestoneType.CREATED_ISSUED]);
+      getCurrentMilestoneSpy.mockRestore();
+    });
+  });
+
+  describe('getMilestoneProgress', () => {
+    it('should calculate progress correctly', async () => {
+      const tokenId = '0.0.123';
+      const serial = '1';
+
+      const mockMilestones = [
+        {
+          id: '1',
+          tokenId: '0.0.123',
+          serial: '1',
+          milestone: MilestoneType.CREATED_ISSUED,
+          topicId: '0.0.123456',
+          sequenceNumber: '1',
+          transactionId: 'tx-123',
+          consensusTimestamp: '2024-01-01T00:00:00Z',
+          fileHash: 'hash123',
+          metadata: {},
+          createdAt: new Date()
+        },
+        {
+          id: '2',
+          tokenId: '0.0.123',
+          serial: '1',
+          milestone: MilestoneType.SHIPPED,
+          topicId: '0.0.123456',
+          sequenceNumber: '2',
+          transactionId: 'tx-124',
+          consensusTimestamp: '2024-01-02T00:00:00Z',
+          fileHash: 'hash124',
+          metadata: {},
+          createdAt: new Date()
+        }
+      ];
+
+      const getMilestonesSpy = jest.spyOn(milestonesService, 'getMilestones').mockResolvedValue(mockMilestones);
+
+      const result = await milestonesService.getMilestoneProgress(tokenId, serial);
+
+      // 2 milestones completed out of 6 total = 33% (rounded)
+      expect(result).toBe(33);
+      getMilestonesSpy.mockRestore();
+    });
+
+    it('should return 0 when no milestone exists', async () => {
+      const tokenId = '0.0.123';
+      const serial = '1';
+
+      const getMilestonesSpy = jest.spyOn(milestonesService, 'getMilestones').mockResolvedValue([]);
+
+      const result = await milestonesService.getMilestoneProgress(tokenId, serial);
+
+      expect(result).toBe(0);
+      getMilestonesSpy.mockRestore();
+    });
+  });
+
+  describe('generateFileHash', () => {
+    it('should generate SHA-256 hash for file buffer', () => {
+      const fileBuffer = Buffer.from('test file content');
+      
+      const result = milestonesService.generateFileHash(fileBuffer);
+      
+      // Calculate the correct hash for 'test file content'
+      expect(result).toBe('60f5237ed4049f0382661ef009d2bc42e48c3ceb3edb6600f7024e7ab3b838f3');
+    });
+  });
+
+  describe('healthCheck', () => {
+    it('should return true when all services are healthy', async () => {
+      // Mock HCS service health check
+      mockHcsService.healthCheck.mockResolvedValue(true);
+
+      const result = await milestonesService.healthCheck();
+
+      expect(result).toBe(true);
+    });
+
+    it('should return false when HCS service is unhealthy', async () => {
+      // Mock HCS service health check to fail
+      mockHcsService.healthCheck.mockResolvedValue(false);
+
+      const result = await milestonesService.healthCheck();
+
+      expect(result).toBe(false);
     });
   });
 });

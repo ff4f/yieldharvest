@@ -1,5 +1,13 @@
 // API Types for YieldHarvest
 
+export interface ProofLink {
+  type: 'hts' | 'hfs' | 'hcs' | 'hashscan' | 'mirror';
+  label: string;
+  url: string;
+  hash?: string;
+  timestamp?: string;
+}
+
 export interface Invoice {
   id: string;
   invoiceNumber: string;
@@ -20,6 +28,39 @@ export interface Invoice {
   fileId?: string;
   topicId?: string;
   mintTransactionId?: string;
+  
+  // Proof links for on-chain verification
+  proofLinks?: ProofLink[];
+  
+  // Mirror Node enriched data from backend
+  onChainData?: {
+    nftInfo?: {
+      tokenId: string;
+      serialNumber: number;
+      accountId: string;
+      createdTimestamp: string;
+      modifiedTimestamp: string;
+      metadata?: string;
+    };
+    hcsTimeline?: Array<{
+      tokenId: string;
+      serialNumber: string;
+      status: string;
+      timestamp: string;
+      sequenceNumber: number;
+      transactionId?: string;
+    }>;
+    fileInfo?: {
+      fileId: string;
+      size?: number;
+      hash?: string;
+    };
+    mintTransaction?: {
+      transactionId: string;
+      timestamp: string;
+      status: string;
+    };
+  };
   
   // Relations
   supplier?: {

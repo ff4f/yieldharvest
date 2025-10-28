@@ -1,6 +1,3 @@
-import dotenv from 'dotenv';
-dotenv.config();
-
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { FastifyRequest, FastifyReply } from 'fastify';
@@ -199,6 +196,8 @@ export const authenticate = async (request: FastifyRequest, reply: FastifyReply)
       ip: request.ip,
       userAgent: request.headers['user-agent'] || undefined,
     });
+    
+    // Don't return anything to continue to next handler
     
   } catch (error) {
     auditLogger.logAuth({

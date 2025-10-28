@@ -1,7 +1,7 @@
 import React from 'react'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { BrowserRouter, MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router-dom'
 import { vi, describe, it, expect, beforeEach } from 'vitest'
 import InvoiceDetail from '../InvoiceDetail'
 import { useInvoice, useFundInvoice } from '@/hooks/useInvoices'
@@ -24,7 +24,7 @@ vi.mock('@/components/ErrorState', () => ({
 const mockUseInvoice = vi.mocked(useInvoice)
 const mockUseFundInvoice = vi.mocked(useFundInvoice)
 // Mock mark as paid functionality (not implemented yet)
-const mockMarkAsPaid = vi.fn()
+// const mockMarkAsPaid = vi.fn(); // Removed unused variable
 
 const createWrapper = (initialEntries = ['/invoices/1']) => {
   const queryClient = new QueryClient({
@@ -74,7 +74,10 @@ const mockFundedInvoice: Invoice = {
     invoiceId: '1',
     investorId: 'investor-1',
     amount: '800.00',
+    interestRate: 5.0,
+    status: 'ACTIVE',
     createdAt: '2024-01-02T00:00:00Z',
+    updatedAt: '2024-01-02T00:00:00Z',
     investor: {
       id: 'investor-1',
       name: 'Test Investor',

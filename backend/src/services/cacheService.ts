@@ -238,21 +238,71 @@ export const hcsCache = new InMemoryCache({
 
 // Utility functions for generating cache keys
 export const CacheKeys = {
+  // New cache keys for enhanced Mirror Node service
+  NFT_INFO: 'nft_info',
+  HCS_MESSAGES: 'hcs_messages',
+  ACCOUNT_INFO: 'account_info',
+  TRANSACTION_INFO: 'transaction_info',
+  NETWORK_STATS: 'network_stats',
+  DASHBOARD_METRICS: 'dashboard_metrics',
+
+  // Legacy cache keys for backward compatibility
   nftsByToken: (tokenId: string, limit: number, order: string) => 
     `nfts:${tokenId}:${limit}:${order}`,
-  
+
   nftBySerial: (tokenId: string, serialNumber: number) => 
     `nft:${tokenId}:${serialNumber}`,
-  
+
   hcsMessages: (topicId: string, limit: number, order: string) => 
     `hcs:${topicId}:${limit}:${order}`,
-  
+
   invoiceMessages: (topicId: string, tokenId?: string, limit?: number) => 
     `invoice_msgs:${topicId}:${tokenId || 'all'}:${limit || 100}`,
-  
+
   transaction: (transactionId: string) => 
     `tx:${transactionId}`,
-  
+
   fileInfo: (fileId: string) => 
     `file:${fileId}`,
 };
+
+// Cache management service
+export class CacheService {
+  static getCacheStats() {
+    return {
+      mirrorNode: mirrorNodeCache.getStats(),
+      nft: nftCache.getStats(),
+      hcs: hcsCache.getStats(),
+    };
+  }
+
+  static clearAllCaches(): void {
+    mirrorNodeCache.destroy();
+    nftCache.destroy();
+    hcsCache.destroy();
+    logger.info('All caches cleared and destroyed');
+  }
+
+  static clearCacheByPattern(pattern: string): number {
+    let deletedCount = 0;
+    const caches = [mirrorNodeCache, nftCache, hcsCache];
+    
+    for (const cache of caches) {
+      const keys = Array.from((cache as any).cache.keys()) as string[];
+      const matchingKeys = keys.filter((key: string) => key.includes(pattern));
+      
+      for (const key of matchingKeys) {
+        cache.delete(key);
+        deletedCount++;
+      }
+    }
+    
+    logger.info(`Cleared ${deletedCount} cache entries matching pattern: ${pattern}`);
+    return deletedCount;
+  }
+
+  static logCacheStats(): void {
+    const stats = this.getCacheStats();
+    logger.info('Cache Statistics:', JSON.stringify(stats));
+  }
+}

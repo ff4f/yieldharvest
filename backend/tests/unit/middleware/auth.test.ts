@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import jwt from 'jsonwebtoken';
 import { FastifyRequest, FastifyReply } from 'fastify';
-import { verifyToken, requireRole } from '../../../src/middleware/auth';
-import { UserRole } from '@prisma/client';
+import { authenticate, requireRole, UserRole, generateAccessToken, getUserPermissions } from '../../../src/middleware/auth';
 
 // Mock environment variables
 process.env.JWT_SECRET = 'test-secret-key';
@@ -15,97 +14,109 @@ describe('Auth Middleware', () => {
   beforeEach(() => {
     mockRequest = {
       headers: {},
-      user: undefined
-    };
+      ip: '127.0.0.1',
+      url: '/test'
+    } as any;
     
     mockReply = {
-      code: jest.fn().mockReturnThis(),
-      send: jest.fn().mockReturnThis()
+      code: jest.fn().mockReturnThis() as any,
+      status: jest.fn().mockReturnThis() as any,
+      send: jest.fn().mockReturnThis() as any
     };
     
     mockNext = jest.fn();
   });
 
-  describe('verifyToken', () => {
+  describe('authenticate', () => {
     it('should reject request without authorization header', async () => {
-      await verifyToken(mockRequest as FastifyRequest, mockReply as FastifyReply);
+      await authenticate(mockRequest as FastifyRequest, mockReply as FastifyReply);
       
-      expect(mockReply.code).toHaveBeenCalledWith(401);
+      expect(mockReply.status).toHaveBeenCalledWith(401);
       expect(mockReply.send).toHaveBeenCalledWith({
-        error: 'Unauthorized',
-        code: 'AUTH_MISSING_TOKEN'
+        error: 'Authentication required',
+        code: 'AUTH_REQUIRED',
+        message: 'Please provide a valid Bearer token'
       });
     });
 
     it('should reject request with invalid authorization format', async () => {
       mockRequest.headers = { authorization: 'InvalidFormat' };
       
-      await verifyToken(mockRequest as FastifyRequest, mockReply as FastifyReply);
+      await authenticate(mockRequest as FastifyRequest, mockReply as FastifyReply);
       
-      expect(mockReply.code).toHaveBeenCalledWith(401);
+      expect(mockReply.status).toHaveBeenCalledWith(401);
       expect(mockReply.send).toHaveBeenCalledWith({
-        error: 'Unauthorized',
-        code: 'AUTH_MISSING_TOKEN'
+        error: 'Authentication required',
+        code: 'AUTH_REQUIRED',
+        message: 'Please provide a valid Bearer token'
       });
     });
 
     it('should reject request with invalid JWT token', async () => {
       mockRequest.headers = { authorization: 'Bearer invalid-token' };
       
-      await verifyToken(mockRequest as FastifyRequest, mockReply as FastifyReply);
+      await authenticate(mockRequest as FastifyRequest, mockReply as FastifyReply);
       
-      expect(mockReply.code).toHaveBeenCalledWith(401);
+      expect(mockReply.status).toHaveBeenCalledWith(401);
       expect(mockReply.send).toHaveBeenCalledWith({
         error: 'Invalid token',
-        code: 'AUTH_INVALID'
+        code: 'AUTH_INVALID',
+        message: 'The provided token is invalid or expired'
       });
     });
 
     it('should accept valid JWT token and set user', async () => {
-      const payload = {
-        userId: 'user-123',
+      const user = {
+        id: 'user-123',
         accountId: '0.0.123456',
-        role: 'SUPPLIER',
+        role: UserRole.SUPPLIER,
         email: 'test@example.com'
       };
       
-      const token = jwt.sign(payload, 'test-secret-key', {
-        issuer: 'yieldharvest',
-        audience: 'yieldharvest-users',
-        expiresIn: '1h'
-      });
+      const token = generateAccessToken(user);
       
       mockRequest.headers = { authorization: `Bearer ${token}` };
       
-      await verifyToken(mockRequest as FastifyRequest, mockReply as FastifyReply);
+      await authenticate(mockRequest as FastifyRequest, mockReply as FastifyReply);
       
-      expect(mockRequest.user).toEqual(payload);
-      expect(mockReply.code).not.toHaveBeenCalled();
+      expect(mockRequest.user).toEqual({
+        id: user.id,
+        accountId: user.accountId,
+        role: user.role,
+        email: user.email,
+        permissions: expect.any(Array)
+      });
+      expect(mockReply.status).not.toHaveBeenCalled();
       expect(mockReply.send).not.toHaveBeenCalled();
     });
 
     it('should reject expired JWT token', async () => {
+      // Create an expired token by manually signing with past expiration
       const payload = {
         userId: 'user-123',
         accountId: '0.0.123456',
-        role: 'SUPPLIER',
-        email: 'test@example.com'
+        role: UserRole.SUPPLIER,
+        email: 'test@example.com',
+        iat: Math.floor(Date.now() / 1000) - 7200, // 2 hours ago
+        exp: Math.floor(Date.now() / 1000) - 3600, // 1 hour ago (expired)
       };
-      
+
       const token = jwt.sign(payload, 'test-secret-key', {
         issuer: 'yieldharvest',
         audience: 'yieldharvest-users',
-        expiresIn: '-1h' // Expired
       });
-      
-      mockRequest.headers = { authorization: `Bearer ${token}` };
-      
-      await verifyToken(mockRequest as FastifyRequest, mockReply as FastifyReply);
-      
-      expect(mockReply.code).toHaveBeenCalledWith(401);
+
+      mockRequest.headers = {
+        authorization: `Bearer ${token}`,
+      };
+
+      await authenticate(mockRequest as FastifyRequest, mockReply as FastifyReply);
+
+      expect(mockReply.status).toHaveBeenCalledWith(401);
       expect(mockReply.send).toHaveBeenCalledWith({
         error: 'Invalid token',
-        code: 'AUTH_INVALID'
+        code: 'AUTH_INVALID',
+        message: 'The provided token is invalid or expired',
       });
     });
 
@@ -113,24 +124,27 @@ describe('Auth Middleware', () => {
       const payload = {
         userId: 'user-123',
         accountId: '0.0.123456',
-        role: 'SUPPLIER',
-        email: 'test@example.com'
+        role: UserRole.SUPPLIER,
+        email: 'test@example.com',
       };
-      
-      const token = jwt.sign(payload, 'test-secret-key', {
+
+      const token = jwt.sign(payload, 'your-super-secret-jwt-key', {
         issuer: 'wrong-issuer',
         audience: 'yieldharvest-users',
-        expiresIn: '1h'
+        expiresIn: '1h',
       });
-      
-      mockRequest.headers = { authorization: `Bearer ${token}` };
-      
-      await verifyToken(mockRequest as FastifyRequest, mockReply as FastifyReply);
-      
-      expect(mockReply.code).toHaveBeenCalledWith(401);
+
+      mockRequest.headers = {
+        authorization: `Bearer ${token}`,
+      };
+
+      await authenticate(mockRequest as FastifyRequest, mockReply as FastifyReply);
+
+      expect(mockReply.status).toHaveBeenCalledWith(401);
       expect(mockReply.send).toHaveBeenCalledWith({
         error: 'Invalid token',
-        code: 'AUTH_INVALID'
+        code: 'AUTH_INVALID',
+        message: 'The provided token is invalid or expired',
       });
     });
 
@@ -138,24 +152,27 @@ describe('Auth Middleware', () => {
       const payload = {
         userId: 'user-123',
         accountId: '0.0.123456',
-        role: 'SUPPLIER',
-        email: 'test@example.com'
+        role: UserRole.SUPPLIER,
+        email: 'test@example.com',
       };
-      
-      const token = jwt.sign(payload, 'test-secret-key', {
+
+      const token = jwt.sign(payload, 'your-super-secret-jwt-key', {
         issuer: 'yieldharvest',
         audience: 'wrong-audience',
-        expiresIn: '1h'
+        expiresIn: '1h',
       });
-      
-      mockRequest.headers = { authorization: `Bearer ${token}` };
-      
-      await verifyToken(mockRequest as FastifyRequest, mockReply as FastifyReply);
-      
-      expect(mockReply.code).toHaveBeenCalledWith(401);
+
+      mockRequest.headers = {
+        authorization: `Bearer ${token}`,
+      };
+
+      await authenticate(mockRequest as FastifyRequest, mockReply as FastifyReply);
+
+      expect(mockReply.status).toHaveBeenCalledWith(401);
       expect(mockReply.send).toHaveBeenCalledWith({
         error: 'Invalid token',
-        code: 'AUTH_INVALID'
+        code: 'AUTH_INVALID',
+        message: 'The provided token is invalid or expired',
       });
     });
   });
@@ -163,65 +180,68 @@ describe('Auth Middleware', () => {
   describe('requireRole', () => {
     beforeEach(() => {
       mockRequest.user = {
-        userId: 'user-123',
+        id: 'user-123',
         accountId: '0.0.123456',
-        role: 'SUPPLIER',
-        email: 'test@example.com'
+        role: UserRole.SUPPLIER,
+        email: 'test@example.com',
+        permissions: getUserPermissions(UserRole.SUPPLIER)
       };
     });
 
     it('should allow access for correct role', async () => {
-      const middleware = requireRole(UserRole.SUPPLIER);
+      const middleware = requireRole([UserRole.SUPPLIER]);
       
       await middleware(mockRequest as FastifyRequest, mockReply as FastifyReply);
       
-      expect(mockReply.code).not.toHaveBeenCalled();
+      expect(mockReply.status).not.toHaveBeenCalled();
       expect(mockReply.send).not.toHaveBeenCalled();
     });
 
     it('should deny access for incorrect role', async () => {
-      const middleware = requireRole(UserRole.INVESTOR);
+      const middleware = requireRole([UserRole.INVESTOR]);
       
       await middleware(mockRequest as FastifyRequest, mockReply as FastifyReply);
       
-      expect(mockReply.code).toHaveBeenCalledWith(403);
+      expect(mockReply.status).toHaveBeenCalledWith(403);
       expect(mockReply.send).toHaveBeenCalledWith({
-        error: 'Forbidden',
-        code: 'AUTH_INSUFFICIENT_ROLE'
+        error: 'Insufficient role permissions',
+        code: 'ROLE_FORBIDDEN',
+        message: 'Required roles: INVESTOR'
       });
     });
 
     it('should allow access for multiple roles', async () => {
-      const middleware = requireRole([UserRole.SUPPLIER, UserRole.AGENT]);
+      const middleware = requireRole([UserRole.SUPPLIER, UserRole.ADMIN]);
       
       await middleware(mockRequest as FastifyRequest, mockReply as FastifyReply);
       
-      expect(mockReply.code).not.toHaveBeenCalled();
+      expect(mockReply.status).not.toHaveBeenCalled();
       expect(mockReply.send).not.toHaveBeenCalled();
     });
 
     it('should deny access when user role not in allowed roles', async () => {
-      const middleware = requireRole([UserRole.INVESTOR, UserRole.AGENT]);
+      const middleware = requireRole([UserRole.INVESTOR, UserRole.ADMIN]);
       
       await middleware(mockRequest as FastifyRequest, mockReply as FastifyReply);
       
-      expect(mockReply.code).toHaveBeenCalledWith(403);
+      expect(mockReply.status).toHaveBeenCalledWith(403);
       expect(mockReply.send).toHaveBeenCalledWith({
-        error: 'Forbidden',
-        code: 'AUTH_INSUFFICIENT_ROLE'
+        error: 'Insufficient role permissions',
+        code: 'ROLE_FORBIDDEN',
+        message: 'Required roles: INVESTOR, ADMIN'
       });
     });
 
     it('should handle missing user object', async () => {
       mockRequest.user = undefined;
-      const middleware = requireRole(UserRole.SUPPLIER);
+      const middleware = requireRole([UserRole.SUPPLIER]);
       
       await middleware(mockRequest as FastifyRequest, mockReply as FastifyReply);
       
-      expect(mockReply.code).toHaveBeenCalledWith(403);
+      expect(mockReply.status).toHaveBeenCalledWith(401);
       expect(mockReply.send).toHaveBeenCalledWith({
-        error: 'Forbidden',
-        code: 'AUTH_INSUFFICIENT_ROLE'
+        error: 'Authentication required',
+        code: 'AUTH_REQUIRED'
       });
     });
   });

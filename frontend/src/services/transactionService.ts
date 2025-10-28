@@ -1,4 +1,4 @@
-import walletService from './walletService'
+import { walletService } from './walletService'
 import { apiClient } from './api'
 import { CreateInvoiceRequest } from '@/types/api'
 
@@ -27,7 +27,7 @@ export interface TransactionResult {
 class TransactionService {
   /**
    * Mint invoice as NFT with file upload and HCS logging
-   * Uses the existing createInvoice API which handles Hedera integration
+   * Uses wallet signing for Hedera transactions
    */
   async mintInvoice(request: MintInvoiceRequest): Promise<TransactionResult> {
     const connection = walletService.getConnection()
@@ -36,18 +36,35 @@ class TransactionService {
     }
 
     try {
-      // Use the existing createInvoice API which handles all Hedera operations
-      const response = await apiClient.createInvoice(request)
+      // Step 1: Prepare mint transaction on backend
+      const prepareResponse = await apiClient.prepareMintTransaction({
+        ...request,
+        accountId: connection.accountId
+      })
+
+      // Step 2: Sign transaction with wallet
+      const transactionBytes = new Uint8Array(
+        Buffer.from(prepareResponse.data.transactionBytes, 'base64')
+      );
       
+      const signedTransactionBytes = await walletService.signTransaction(transactionBytes);
+
+      // Step 3: Submit signed transaction
+      const submitResponse = await apiClient.submitMintTransaction({
+        invoiceId: prepareResponse.data.invoiceId,
+        signedTransactionBytes: Buffer.from(signedTransactionBytes).toString('base64'),
+        transactionId: prepareResponse.data.transactionId
+      });
+
       return {
-        transactionId: response.proofs.mintTransactionId || 'pending',
+        transactionId: submitResponse.data.transactionId,
         status: 'SUCCESS',
-        hashScanUrl: walletService.getHashScanUrl(response.proofs.mintTransactionId || 'pending'),
+        hashScanUrl: walletService.getHashScanUrl(submitResponse.data.transactionId),
         receipt: {
-          tokenId: response.invoice.tokenId,
-          serialNumber: response.invoice.serialNumber,
-          fileId: response.invoice.fileId,
-          topicId: response.invoice.topicId
+          tokenId: submitResponse.data.tokenId,
+          serialNumber: submitResponse.data.serialNumber,
+          fileId: submitResponse.data.fileId,
+          topicId: submitResponse.data.topicId
         }
       }
     } catch (error) {
@@ -58,7 +75,7 @@ class TransactionService {
 
   /**
    * Fund invoice with escrow transaction
-   * Uses the existing fundInvoice API which handles Hedera integration
+   * Uses wallet signing for Hedera transactions
    */
   async fundInvoice(request: FundInvoiceRequest): Promise<TransactionResult> {
     const connection = walletService.getConnection()
@@ -67,7 +84,8 @@ class TransactionService {
     }
 
     try {
-      // Use the existing fundInvoice API which handles all Hedera operations
+      // For now, use the existing API until backend supports wallet signing
+      // TODO: Implement prepare-fund and submit-fund endpoints in backend
       const response = await apiClient.fundInvoice(request.invoiceId, request.amount.toString())
       
       return {

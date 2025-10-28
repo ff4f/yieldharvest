@@ -9,10 +9,11 @@ import {
   X,
   Bell,
   Search,
-  LogOut,
   Plus
 } from 'lucide-react';
 import { WalletConnect } from '@/components/WalletConnect';
+import WalletInfo from '@/components/WalletInfo';
+import { useWallet } from '@/contexts/WalletContext';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -21,17 +22,18 @@ interface LayoutProps {
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const location = useLocation();
+  const { isConnected } = useWallet();
 
   const navigation = [
-    { name: 'Dashboard', href: '/', icon: LayoutDashboard },
+    { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
     { name: 'Invoices', href: '/invoices', icon: FileText },
-    { name: 'Investors', href: '/investors', icon: Users },
+    { name: 'Funding', href: '/investors', icon: Users },
     { name: 'Settings', href: '/settings', icon: Settings },
   ];
 
   const isActive = (href: string) => {
-    if (href === '/') {
-      return location.pathname === '/';
+    if (href === '/dashboard') {
+      return location.pathname === '/' || location.pathname === '/dashboard';
     }
     return location.pathname.startsWith(href);
   };
@@ -102,7 +104,11 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               </div>
             </div>
             <div className="flex flex-shrink-0 border-t border-gray-200 p-4">
-              <WalletConnect />
+              {isConnected ? (
+                <WalletInfo variant="inline" showActions={false} />
+              ) : (
+                <WalletConnect />
+              )}
             </div>
           </div>
           <div className="w-14 flex-shrink-0"></div>
@@ -158,7 +164,11 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             </div>
           </div>
           <div className="flex-shrink-0 border-t border-gray-200 p-4">
-            <WalletConnect />
+            {isConnected ? (
+              <WalletInfo variant="inline" showActions={false} />
+            ) : (
+              <WalletConnect />
+            )}
           </div>
         </div>
       </div>

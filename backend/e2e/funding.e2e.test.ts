@@ -15,6 +15,7 @@ describe('Funding API E2E Tests', () => {
   let testInvoiceId: string;
   let testInvestorId: string;
   let testFundingId: string;
+  let testSupplierId: string;
 
   beforeAll(async () => {
     // Setup Fastify app
@@ -38,16 +39,18 @@ describe('Funding API E2E Tests', () => {
       },
     });
     testInvestorId = testUser.id;
+    testSupplierId = testUser.id;
 
     const testInvoice = await prisma.invoice.create({
       data: {
         invoiceNumber: 'E2E-001',
+        supplierId: testSupplierId,
         buyerId: 'test-buyer-e2e',
-        amount: '2000.00',
+        amount: 2000.00,
         dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
         status: 'ISSUED',
         description: 'E2E test invoice',
-        tokenId: '0.0.789012',
+        nftTokenId: '0.0.789012',
         fileId: '0.0.345678',
         topicId: '0.0.901234',
       },
@@ -86,7 +89,8 @@ describe('Funding API E2E Tests', () => {
           invoiceId: testInvoiceId,
           investorId: testInvestorId,
           amount: '1000',
-          buyerAddress: '0x742d35Cc6634C0532925a3b8D4C9db96DfbB8b2f',
+          supplierAccountId: '0.0.12345',
+          nftSerialNumber: 1,
         },
       });
 
@@ -129,7 +133,8 @@ describe('Funding API E2E Tests', () => {
           invoiceId: 'non-existent-invoice',
           investorId: testInvestorId,
           amount: '500',
-          buyerAddress: '0x742d35Cc6634C0532925a3b8D4C9db96DfbB8b2f',
+          supplierAccountId: '0.0.12345',
+          nftSerialNumber: 1,
         },
       });
 
@@ -215,8 +220,9 @@ describe('Funding API E2E Tests', () => {
       const emptyInvoice = await prisma.invoice.create({
         data: {
           invoiceNumber: 'EMPTY-E2E-001',
+          supplierId: testSupplierId,
           buyerId: 'test-buyer-empty',
-          amount: '1000.00',
+          amount: 1000.00,
           dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
           status: 'ISSUED',
           description: 'Empty invoice for E2E test',
@@ -281,62 +287,7 @@ describe('Funding API E2E Tests', () => {
   });
 
   describe('POST /api/fundings/:id/refund', () => {
-    it('should refund escrow successfully', async () => {
-      // Create another funding for refund test
-      mockContractService.createEscrow.mockResolvedValue({
-        escrowId: '2',
-        transactionHash: '0xe2erefund123',
-        status: 'confirmed',
-        blockNumber: 12347,
-        gasUsed: '150000',
-      });
-
-      const createResponse = await app.inject({
-        method: 'POST',
-        url: '/api/fundings',
-        payload: {
-          invoiceId: testInvoiceId,
-          investorId: testInvestorId,
-          amount: '500',
-          buyerAddress: '0x742d35Cc6634C0532925a3b8D4C9db96DfbB8b2f',
-        },
-      });
-
-      const createData = JSON.parse(createResponse.body);
-      const refundFundingId = createData.data.id;
-
-      // Mock refund response
-      mockContractService.refundEscrow.mockResolvedValue({
-        escrowId: '2',
-        transactionHash: '0xe2erefundtx123',
-        status: 'confirmed',
-        blockNumber: 12348,
-        gasUsed: '75000',
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: `/api/fundings/${refundFundingId}/refund`,
-      });
-
-      expect(response.statusCode).toBe(200);
-      
-      const responseData = JSON.parse(response.body);
-      expect(responseData.message).toContain('Escrow refunded successfully');
-      expect(responseData.transactionHash).toBe('0xe2erefundtx123');
-      expect(responseData.proofLinks).toHaveProperty('transaction');
-      expect(responseData.proofLinks).toHaveProperty('contract');
-
-      // Verify funding status was updated
-      const updatedFunding = await prisma.funding.findUnique({
-        where: { id: refundFundingId },
-      });
-      expect(updatedFunding?.status).toBe('REFUNDED');
-      expect(updatedFunding?.refundTransactionHash).toBe('0xe2erefundtx123');
-
-      // Cleanup
-      await prisma.funding.delete({ where: { id: refundFundingId } });
-    });
+    // Note: Refund functionality removed as it's not supported by the current escrow contract
   });
 
   describe('Error handling', () => {
@@ -351,7 +302,8 @@ describe('Funding API E2E Tests', () => {
           invoiceId: testInvoiceId,
           investorId: testInvestorId,
           amount: '100',
-          buyerAddress: '0x742d35Cc6634C0532925a3b8D4C9db96DfbB8b2f',
+          supplierAccountId: '0.0.12345',
+          nftSerialNumber: 1,
         },
       });
 
@@ -373,7 +325,8 @@ describe('Funding API E2E Tests', () => {
           invoiceId: testInvoiceId,
           investorId: testInvestorId,
           amount: '100',
-          buyerAddress: '0x742d35Cc6634C0532925a3b8D4C9db96DfbB8b2f',
+          supplierAccountId: '0.0.12345',
+          nftSerialNumber: 1,
         },
       });
 

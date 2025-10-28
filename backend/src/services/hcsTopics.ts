@@ -28,8 +28,8 @@ export class HcsTopicsService {
 
   constructor() {
     // Initialize Hedera client
-    this.operatorId = AccountId.fromString(process.env.HEDERA_ACCOUNT_ID!);
-    this.operatorKey = PrivateKey.fromString(process.env.HEDERA_PRIVATE_KEY!);
+    this.operatorId = AccountId.fromString(process.env.OPERATOR_ID!);
+    this.operatorKey = PrivateKey.fromString(process.env.OPERATOR_KEY!);
     
     if (process.env.HEDERA_NETWORK === 'mainnet') {
       this.client = Client.forMainnet();
@@ -235,6 +235,18 @@ export class HcsTopicsService {
     } catch (error) {
       logger.error('HCS Topics health check failed', { error });
       return false;
+    }
+  }
+
+  /**
+   * Close the HCS client connection
+   */
+  async close(): Promise<void> {
+    try {
+      await this.client.close();
+      logger.info('HCS Topics service client closed');
+    } catch (error) {
+      logger.error('Error closing HCS Topics service client', { error });
     }
   }
 }

@@ -31,7 +31,8 @@ export class MilestonesApi {
    */
   static async getMilestoneTimeline(tokenId, serial) {
     try {
-      const response = await apiClient.get(`/api/milestones/timeline/${tokenId}/${serial}`);
+      const params = new URLSearchParams({ tokenId, serial: String(serial) });
+      const response = await apiClient.get(`/api/milestones/timeline?${params.toString()}`);
       return response.data;
     } catch (error) {
       console.error('Error fetching milestone timeline:', error);
@@ -62,11 +63,13 @@ export class MilestonesApi {
    * @returns {Promise<Array>} Real-time milestone data
    */
   static async getRealTimeMilestones(tokenId, serial) {
+    // Backend does not expose a dedicated 'realtime' route; use timeline with no cache as a near-real-time fallback
     try {
-      const response = await apiClient.get(`/api/milestones/realtime/${tokenId}/${serial}`);
+      const params = new URLSearchParams({ tokenId, serial: String(serial), useCache: 'false' });
+      const response = await apiClient.get(`/api/milestones/timeline?${params.toString()}`);
       return response.data;
     } catch (error) {
-      console.error('Error fetching real-time milestones:', error);
+      console.error('Error fetching real-time milestones (fallback):', error);
       throw error;
     }
   }

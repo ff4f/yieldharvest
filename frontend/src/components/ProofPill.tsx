@@ -1,6 +1,5 @@
 // ProofPill component for displaying Hedera proof links
 
-import React from 'react';
 import { ExternalLink, FileText, MessageSquare, Coins, Shield, ArrowUpRight, ArrowDownLeft, Code } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';

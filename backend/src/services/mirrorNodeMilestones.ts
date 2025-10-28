@@ -19,8 +19,24 @@ export interface MirrorNodeMilestone {
   };
   parsedData?: {
     type: string;
-    timestamp: string;
-    data: {
+    version?: string;
+    payload?: {
+      tokenId: string;
+      serial: string;
+      milestone: MilestoneType;
+      ts: string;
+      fileHash?: string | null;
+    };
+    context?: {
+      agentId?: string;
+      location?: string;
+      notes?: string;
+      documentUrl?: string;
+      metadata?: Record<string, any>;
+    };
+    // Legacy format support
+    timestamp?: string;
+    data?: {
       tokenId: string;
       serial: string;
       milestone: MilestoneType;
@@ -99,11 +115,10 @@ export class MirrorNodeMilestonesService {
       }
 
       // Fetch messages from Mirror Node
-      const messagesResponse = await mirrorNodeService.getHcsMessages(topicId, {
+      const messages = await mirrorNodeService.getHCSMessages(topicId, {
         limit,
         order: 'asc'
       });
-      const messages = messagesResponse.messages;
 
       // Filter and parse milestone messages
       const milestones = await this.parseMilestoneMessages(messages, tokenId, serial);
@@ -295,11 +310,20 @@ export class MirrorNodeMilestonesService {
       const parsedData = JSON.parse(decodedMessage);
 
       // Check if this is a milestone event for our token
-      if (
-        parsedData.type === 'MILESTONE_EVENT' &&
-        parsedData.data?.tokenId === tokenId &&
-        parsedData.data?.serial === serial
-      ) {
+      let isValidMilestone = false;
+      
+      // Support new normalized payload structure
+      if (parsedData.type === 'MILESTONE_EVENT' && parsedData.payload) {
+        isValidMilestone = parsedData.payload.tokenId === tokenId && 
+                          parsedData.payload.serial === serial;
+      }
+      // Support legacy format for backward compatibility
+      else if (parsedData.type === 'MILESTONE_EVENT' && parsedData.data) {
+        isValidMilestone = parsedData.data.tokenId === tokenId && 
+                          parsedData.data.serial === serial;
+      }
+
+      if (isValidMilestone) {
         return {
           consensusTimestamp: message.consensus_timestamp,
           sequenceNumber: message.sequence_number.toString(),
@@ -316,7 +340,7 @@ export class MirrorNodeMilestonesService {
 
       return null;
     } catch (error) {
-      logger.debug('Message is not a valid milestone event', { error, message });
+      logger.debug('Message is not a valid milestone event', { error: error instanceof Error ? error.message : String(error), messageId: message.sequence_number });
       return null;
     }
   }

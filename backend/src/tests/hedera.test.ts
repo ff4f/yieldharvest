@@ -16,6 +16,7 @@ jest.mock('@hashgraph/sdk', () => {
     },
     PrivateKey: {
       fromString: jest.fn().mockReturnValue({}),
+      generate: jest.fn().mockReturnValue({}),
     },
     AccountId: {
       fromString: jest.fn().mockReturnValue({}),

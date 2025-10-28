@@ -4,12 +4,12 @@ import helmet from '@fastify/helmet';
 import cors from '@fastify/cors';
 import { auditLogger } from '../utils/logger';
 
-// Rate limiting configurations
+// Rate limiting configurations with environment variables
 const rateLimitConfigs = {
   // General API rate limiting
   general: {
-    max: 100, // requests
-    timeWindow: '15 minutes',
+    max: parseInt(process.env.RATE_LIMIT_MAX || '100'), // requests
+    timeWindow: parseInt(process.env.RATE_LIMIT_WINDOW || '900000'), // 15 minutes in ms
     errorResponseBuilder: (request: FastifyRequest, context: any) => {
       auditLogger.logSecurity({
         eventType: 'rate_limit_exceeded',
@@ -20,6 +20,7 @@ const rateLimitConfigs = {
           method: request.method,
           limit: context.max,
           timeWindow: context.timeWindow,
+          userAgent: request.headers['user-agent'],
         },
         ip: request.ip,
       });
@@ -27,16 +28,16 @@ const rateLimitConfigs = {
       return {
         error: 'Too many requests',
         code: 'RATE_LIMIT_EXCEEDED',
-        message: `Rate limit exceeded. Try again in ${context.timeWindow}`,
-        retryAfter: context.ttl,
+        message: `Rate limit exceeded. Try again in ${Math.ceil(context.ttl / 1000)} seconds`,
+        retryAfter: Math.ceil(context.ttl / 1000),
       };
     },
   },
 
   // Authentication endpoints (more restrictive)
   auth: {
-    max: 10,
-    timeWindow: '15 minutes',
+    max: parseInt(process.env.AUTH_RATE_LIMIT_MAX || '10'),
+    timeWindow: parseInt(process.env.AUTH_RATE_LIMIT_WINDOW || '900000'), // 15 minutes
     errorResponseBuilder: (request: FastifyRequest, context: any) => {
       auditLogger.logSecurity({
         eventType: 'auth_rate_limit_exceeded',
@@ -47,6 +48,8 @@ const rateLimitConfigs = {
           method: request.method,
           limit: context.max,
           timeWindow: context.timeWindow,
+          userAgent: request.headers['user-agent'],
+          suspiciousActivity: true,
         },
         ip: request.ip,
       });
@@ -54,8 +57,8 @@ const rateLimitConfigs = {
       return {
         error: 'Too many authentication attempts',
         code: 'AUTH_RATE_LIMIT_EXCEEDED',
-        message: `Too many authentication attempts. Try again in ${context.timeWindow}`,
-        retryAfter: context.ttl,
+        message: `Authentication rate limit exceeded. Try again in ${Math.ceil(context.ttl / 1000)} seconds`,
+        retryAfter: Math.ceil(context.ttl / 1000),
       };
     },
   },
@@ -115,13 +118,12 @@ const rateLimitConfigs = {
   },
 };
 
-// CORS configuration
+// CORS configuration with environment-based allowlist
 const corsConfig = {
-  origin: [
+  origin: process.env.CORS_ORIGINS?.split(',').map(o => o.trim()) || [
     'http://localhost:3000',
     'http://localhost:5173',
     'https://yieldharvest.vercel.app',
-    // Add production domains here
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
@@ -326,19 +328,13 @@ export const responseLogger = async (request: FastifyRequest, reply: FastifyRepl
 // Register all security middleware
 export const registerSecurityMiddleware = async (fastify: FastifyInstance) => {
   // Register Helmet for security headers
-  await fastify.register(helmet);
+  await fastify.register(helmet as any);
   
   // Register CORS
-  await fastify.register(cors, {
-    origin: corsConfig.origin,
-    credentials: corsConfig.credentials,
-    methods: corsConfig.methods,
-    allowedHeaders: corsConfig.allowedHeaders,
-    exposedHeaders: corsConfig.exposedHeaders,
-  });
+  await fastify.register(cors as any, corsConfig);
   
   // Register general rate limiting
-  await fastify.register(rateLimit, rateLimitConfigs.general);
+  await fastify.register(rateLimit as any, rateLimitConfigs.general);
   
   // Add custom security middleware
   fastify.addHook('onRequest', securityHeaders);
@@ -351,21 +347,21 @@ export const registerSecurityMiddleware = async (fastify: FastifyInstance) => {
   
   // Register specific rate limiters for different route groups
   fastify.register(async function (fastify) {
-    await fastify.register(rateLimit, {
+    await fastify.register(rateLimit as any, {
       ...rateLimitConfigs.auth,
       prefix: '/auth',
     });
   });
   
   fastify.register(async function (fastify) {
-    await fastify.register(rateLimit, {
+    await fastify.register(rateLimit as any, {
       ...rateLimitConfigs.upload,
       prefix: '/upload',
     });
   });
   
   fastify.register(async function (fastify) {
-    await fastify.register(rateLimit, {
+    await fastify.register(rateLimit as any, {
       ...rateLimitConfigs.hedera,
       prefix: '/hedera',
     });

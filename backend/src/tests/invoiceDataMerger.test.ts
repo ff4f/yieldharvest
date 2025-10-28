@@ -4,10 +4,10 @@ import { InvoiceDataMerger } from '../services/invoiceDataMerger';
 // Mock dependencies
 jest.mock('../services/mirrorNodeService', () => ({
   mirrorNodeService: {
-    getNftsByTokenId: jest.fn(),
-    getNftBySerial: jest.fn(),
-    getHcsMessages: jest.fn(),
-    parseInvoiceMessage: jest.fn(),
+    getNFTsByToken: jest.fn(),
+    getNFTInfo: jest.fn(),
+    getHCSMessages: jest.fn(),
+    parseInvoiceMessages: jest.fn(),
     getInvoiceMessages: jest.fn(),
   },
 }));
@@ -100,7 +100,7 @@ describe('InvoiceDataMerger', () => {
 
       mockPrisma.invoice.findFirst.mockResolvedValue(mockInvoice);
       const { mirrorNodeService } = require('../services/mirrorNodeService');
-      mirrorNodeService.getNftBySerial.mockResolvedValue(mockNftData);
+      mirrorNodeService.getNFTInfo.mockResolvedValue(mockNftData);
 
       const result = await invoiceDataMerger.getDetailedInvoice('0.0.123456', 1);
 
@@ -208,7 +208,7 @@ describe('InvoiceDataMerger', () => {
       
       // Mock mirrorNodeService to also throw error
       const { mirrorNodeService } = require('../services/mirrorNodeService');
-      mirrorNodeService.getNftBySerial.mockRejectedValue(dbError);
+      mirrorNodeService.getNFTInfo.mockRejectedValue(dbError);
 
       await expect(invoiceDataMerger.getDetailedInvoice('0.0.123456', 1))
         .rejects.toThrow('Database connection failed');

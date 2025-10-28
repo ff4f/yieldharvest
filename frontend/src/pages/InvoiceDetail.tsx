@@ -7,20 +7,28 @@ import {
   FileText, 
   DollarSign, 
   Calendar, 
-  Building, 
   ExternalLink,
   Clock,
   CheckCircle,
   AlertCircle,
   Download,
-  Eye
+  Eye,
+  Activity,
+  Shield,
+  Hash
 } from 'lucide-react'
 import { useInvoice, useUpdateInvoice } from '@/hooks/useInvoices'
 import { useCreateFunding, useFundingsByInvoice, useReleaseFunding, useRefundFunding } from '@/hooks/useFunding'
 import { LoadingState } from '@/components/LoadingState'
 import { ErrorState } from '@/components/ErrorState'
 import { InvoiceProofPill, FundingProofPill } from '@/components/ProofPill'
+import { useMilestoneUpdates } from '@/hooks/useWebSocket'
 import { Invoice } from '@/types/api'
+import { useWallet } from '@/contexts/WalletContext'
+import transactionService from '@/services/transactionService'
+import HCSTimeline from '@/components/HCSTimeline'
+import WalletFundingModal from '@/components/WalletFundingModal'
+import ProofTray from '@/components/ui/ProofTray'
 
 const InvoiceDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>()
@@ -30,25 +38,44 @@ const InvoiceDetail: React.FC = () => {
   const { data: fundings } = useFundingsByInvoice(id!)
   const releaseFundingMutation = useReleaseFunding()
   const refundFundingMutation = useRefundFunding()
-  const [fundingAmount, setFundingAmount] = useState('')
+  const [recentUpdates, setRecentUpdates] = useState<any[]>([])
+  const [showFundingModal, setShowFundingModal] = useState(false)
+  const { isConnected, accountId } = useWallet()
+  
+  // WebSocket for real-time updates specific to this invoice
+  useMilestoneUpdates(
+    '', // dealId - empty string instead of undefined
+    id || '', // invoiceId - listen to this specific invoice, with fallback
+    (update: any) => {
+      console.log('Invoice detail update received:', update)
+      setRecentUpdates(prev => [update, ...prev.slice(0, 9)]) // Keep last 10 updates
+    }
+  )
 
-  const handleFundInvoice = async () => {
-    if (!invoice || !fundingAmount) return
-    
-    createFundingMutation.mutate({
-      invoiceId: invoice.id,
-      amount: parseFloat(fundingAmount),
-      investorId: 'current-user' // TODO: Get from auth context
-    })
+  const handleFundInvoice = () => {
+    if (!isConnected || !accountId) {
+      alert('Please connect your wallet to fund this invoice')
+      return
+    }
+    setShowFundingModal(true)
   }
 
   const handleMarkAsPaid = async () => {
-    if (!invoice) return
+    if (!invoice || !isConnected || !accountId) {
+      alert('Please connect your wallet to mark invoice as paid')
+      return
+    }
     
-    updateInvoiceMutation.mutate({
-      id: invoice.id,
-      data: { status: 'PAID' }
-    })
+    try {
+      // Use transactionService for wallet-signed payment
+      await transactionService.payInvoice({
+        invoiceId: invoice.id,
+        payerAccountId: accountId
+      })
+    } catch (error) {
+      console.error('Failed to mark invoice as paid:', error)
+      alert('Failed to mark invoice as paid. Please try again.')
+    }
   }
 
   const getStatusIcon = (status: string) => {
@@ -98,6 +125,11 @@ const InvoiceDetail: React.FC = () => {
     )
   }
 
+  // Extract Mirror Node data from the enriched invoice
+  const nftInfo = invoice.onChainData?.nftInfo
+  const hcsTimeline = invoice.onChainData?.hcsTimeline || []
+  const fileInfo = invoice.onChainData?.fileInfo
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -124,6 +156,182 @@ const InvoiceDetail: React.FC = () => {
         </div>
       </div>
 
+      {/* Mirror Node & Blockchain Proof Section */}
+      {(nftInfo || hcsTimeline.length > 0 || fileInfo) && (
+        <Card className="border-blue-200 bg-blue-50/50">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Shield className="h-5 w-5 text-blue-600" />
+              Blockchain Proof & Mirror Node Data
+            </CardTitle>
+            <CardDescription>
+              Real-time data from Hedera Mirror Node showing on-chain proof of this invoice
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {nftInfo && (
+                <div className="p-4 bg-white rounded-lg border">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Hash className="h-4 w-4 text-blue-600" />
+                    <span className="text-sm font-medium">NFT Token</span>
+                  </div>
+                  <div className="text-xs font-mono text-gray-600 mb-2">{nftInfo.tokenId}</div>
+                  <div className="text-xs text-gray-500 mb-2">Serial: {nftInfo.serialNumber}</div>
+                  <div className="text-xs text-gray-500 mb-2">Owner: {nftInfo.accountId}</div>
+                  {nftInfo.metadata && (
+                    <div className="text-xs text-gray-500 mb-2">
+                      Metadata: {nftInfo.metadata.substring(0, 20)}...
+                    </div>
+                  )}
+                  <a
+                    href={`https://hashscan.io/testnet/token/${nftInfo.tokenId}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-blue-600 hover:underline flex items-center gap-1"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    View on HashScan
+                  </a>
+                </div>
+              )}
+              
+              {fileInfo && (
+                <div className="p-4 bg-white rounded-lg border">
+                  <div className="flex items-center gap-2 mb-2">
+                    <FileText className="h-4 w-4 text-green-600" />
+                    <span className="text-sm font-medium">HFS File</span>
+                  </div>
+                  <div className="text-xs font-mono text-gray-600 mb-2">{fileInfo.fileId}</div>
+                  {fileInfo.hash && (
+                    <div className="text-xs text-gray-500 mb-2">
+                      Hash: {fileInfo.hash.substring(0, 16)}...
+                    </div>
+                  )}
+                  <a
+                    href={`https://hashscan.io/testnet/file/${fileInfo.fileId}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-green-600 hover:underline flex items-center gap-1"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    View File
+                  </a>
+                </div>
+              )}
+              
+              <div className="p-4 bg-white rounded-lg border">
+                <div className="flex items-center gap-2 mb-2">
+                  <Activity className="h-4 w-4 text-purple-600" />
+                  <span className="text-sm font-medium">HCS Messages</span>
+                </div>
+                <div className="text-xs text-gray-600 mb-2">
+                  {hcsTimeline.length} status updates
+                </div>
+                {hcsTimeline.length > 0 && (
+                  <div className="text-xs text-gray-500 mb-2">
+                    Latest: {new Date(hcsTimeline[0].timestamp).toLocaleDateString()}
+                  </div>
+                )}
+                {invoice.topicId && (
+                  <a
+                    href={`https://hashscan.io/testnet/topic/${invoice.topicId}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-purple-600 hover:underline flex items-center gap-1"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    View Topic
+                  </a>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* HCS Timeline Section */}
+      {hcsTimeline.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Activity className="h-5 w-5 text-purple-600" />
+              On-Chain Status Timeline
+            </CardTitle>
+            <CardDescription>
+              Real-time status updates from Hedera Consensus Service
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2 max-h-60 overflow-y-auto">
+              {hcsTimeline.map((update, index) => (
+                <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                  <div className="flex items-center gap-3">
+                    <div className="w-2 h-2 bg-purple-500 rounded-full" />
+                    <span className="text-sm font-medium capitalize">{update.status}</span>
+                    <span className="text-xs text-gray-500">
+                      {new Date(update.timestamp).toLocaleString()}
+                    </span>
+                    <span className="text-xs text-gray-400">
+                      Seq: {update.sequenceNumber}
+                    </span>
+                  </div>
+                  {update.transactionId && (
+                    <a
+                      href={`https://hashscan.io/testnet/transaction/${update.transactionId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1 text-xs text-blue-600 hover:underline"
+                    >
+                      <ExternalLink className="h-3 w-3" />
+                      Tx
+                    </a>
+                  )}
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Real-time Updates Section */}
+      {recentUpdates.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Activity className="h-5 w-5 text-green-600" />
+              Real-time Updates
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2 max-h-60 overflow-y-auto">
+              {recentUpdates.map((update, index) => (
+                <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                  <div className="flex items-center gap-3">
+                    <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+                    <span className="text-sm font-medium">{update.message || 'Invoice updated'}</span>
+                    <span className="text-xs text-gray-500">
+                      {new Date(update.timestamp).toLocaleTimeString()}
+                    </span>
+                  </div>
+                  {update.transactionId && (
+                    <a
+                      href={`https://hashscan.io/testnet/transaction/${update.transactionId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1 text-xs text-blue-600 hover:underline"
+                    >
+                      <ExternalLink className="h-3 w-3" />
+                      Tx
+                    </a>
+                  )}
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <div className="grid gap-6 lg:grid-cols-3">
         {/* Main Content */}
         <div className="lg:col-span-2 space-y-6">
@@ -147,72 +355,59 @@ const InvoiceDetail: React.FC = () => {
                   </p>
                 </div>
                 <div>
-                  <p className="text-sm text-muted-foreground">Funding Rate</p>
+                  <p className="text-sm text-muted-foreground">Due Date</p>
                   <p className="text-lg font-semibold">
-                    {invoice.fundings?.length ? 
-                      `${((invoice.fundings.reduce((sum, f) => sum + parseFloat(f.amount), 0) / parseFloat(invoice.amount)) * 100).toFixed(1)}%` : 
-                      'N/A'
-                    }
+                    {new Date(invoice.dueDate).toLocaleDateString()}
                   </p>
                 </div>
                 <div>
-                  <p className="text-sm text-muted-foreground">Created Date</p>
-                  <p className="text-lg font-semibold">
-                    {new Date(invoice.createdAt).toLocaleDateString()}
-                  </p>
-                </div>
-              </div>
-              
-              <div>
-                <label className="text-sm font-medium text-muted-foreground">Due Date</label>
-                <div className="flex items-center gap-2 mt-1">
-                  <Calendar className="h-4 w-4 text-muted-foreground" />
-                  <span className="font-medium">{new Date(invoice.dueDate).toLocaleDateString()}</span>
+                  <p className="text-sm text-muted-foreground">Currency</p>
+                  <p className="text-lg font-semibold">{invoice.currency}</p>
                 </div>
               </div>
               
               {invoice.description && (
                 <div>
-                  <label className="text-sm font-medium text-muted-foreground">Description</label>
+                  <p className="text-sm text-muted-foreground">Description</p>
                   <p className="mt-1">{invoice.description}</p>
                 </div>
               )}
             </CardContent>
           </Card>
 
-          {/* Funding Information */}
-          {invoice.status !== 'issued' && (
+          {/* Funding Details */}
+          {fundings && fundings.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle>Funding Information</CardTitle>
+                <CardTitle>Funding Details</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                {invoice.fundingAmount && (
+                {fundings && fundings.length > 0 && (
                   <div>
                     <label className="text-sm font-medium text-muted-foreground">Funded Amount</label>
                     <div className="flex items-center gap-2 mt-1">
                       <DollarSign className="h-4 w-4 text-muted-foreground" />
                       <span className="text-xl font-bold text-blue-600">
-                        ${invoice.fundingAmount.toLocaleString()}
+                        ${fundings.reduce((sum: number, f: any) => sum + parseFloat(f.amount), 0).toLocaleString()}
                       </span>
                       <span className="text-sm text-muted-foreground">
-                        ({((invoice.fundingAmount / invoice.amount) * 100).toFixed(1)}% of invoice value)
+                        ({((fundings.reduce((sum: number, f: any) => sum + parseFloat(f.amount), 0) / parseFloat(invoice.amount)) * 100).toFixed(1)}% of invoice value)
                       </span>
                     </div>
                   </div>
                 )}
                 
-                {invoice.fundedAt && (
+                {fundings && fundings.length > 0 && fundings[0].fundedAt && (
                   <div>
                     <label className="text-sm font-medium text-muted-foreground">Funded Date</label>
-                    <p className="mt-1">{new Date(invoice.fundedAt).toLocaleDateString()}</p>
+                    <p className="mt-1">{new Date(fundings[0].fundedAt).toLocaleDateString()}</p>
                   </div>
                 )}
                 
-                {invoice.paidAt && (
+                {invoice.status === 'PAID' && (
                   <div>
                     <label className="text-sm font-medium text-muted-foreground">Paid Date</label>
-                    <p className="mt-1">{new Date(invoice.paidAt).toLocaleDateString()}</p>
+                    <p className="mt-1">{new Date(invoice.updatedAt).toLocaleDateString()}</p>
                   </div>
                 )}
               </CardContent>
@@ -233,6 +428,7 @@ const InvoiceDetail: React.FC = () => {
                   onClick={handleFundInvoice} 
                   disabled={createFundingMutation.isPending}
                   className="w-full"
+                  data-testid="fund-invoice-button"
                 >
                   {createFundingMutation.isPending ? 'Processing...' : 'Fund Invoice'}
                 </Button>
@@ -258,9 +454,9 @@ const InvoiceDetail: React.FC = () => {
                 View Document
               </Button>
               
-              {invoice.tokenId && (
+              {nftInfo && (
                 <a 
-                  href={`https://hashscan.io/testnet/token/${invoice.tokenId}`}
+                  href={`https://hashscan.io/testnet/token/${nftInfo.tokenId}`}
                   target="_blank" 
                   rel="noopener noreferrer"
                   className="inline-block"
@@ -286,26 +482,38 @@ const InvoiceDetail: React.FC = () => {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              {invoice.tokenId && (
+              {nftInfo && (
                 <div>
                   <label className="text-sm font-medium text-muted-foreground">NFT Token ID</label>
                   <div className="flex items-center gap-2 mt-1">
-                    <code className="text-sm bg-muted px-2 py-1 rounded">{invoice.tokenId}</code>
-                    <Button size="sm" variant="ghost">
-                      <ExternalLink className="h-3 w-3" />
-                    </Button>
+                    <code className="text-sm bg-muted px-2 py-1 rounded">{nftInfo.tokenId}</code>
+                    <a 
+                      href={`https://hashscan.io/testnet/token/${nftInfo.tokenId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <Button size="sm" variant="ghost">
+                        <ExternalLink className="h-3 w-3" />
+                      </Button>
+                    </a>
                   </div>
                 </div>
               )}
               
-              {invoice.fileId && (
+              {fileInfo && (
                 <div>
                   <label className="text-sm font-medium text-muted-foreground">File ID (HFS)</label>
                   <div className="flex items-center gap-2 mt-1">
-                    <code className="text-sm bg-muted px-2 py-1 rounded">{invoice.fileId}</code>
-                    <Button size="sm" variant="ghost">
-                      <ExternalLink className="h-3 w-3" />
-                    </Button>
+                    <code className="text-sm bg-muted px-2 py-1 rounded">{fileInfo.fileId}</code>
+                    <a 
+                      href={`https://hashscan.io/testnet/file/${fileInfo.fileId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <Button size="sm" variant="ghost">
+                        <ExternalLink className="h-3 w-3" />
+                      </Button>
+                    </a>
                   </div>
                 </div>
               )}
@@ -315,9 +523,15 @@ const InvoiceDetail: React.FC = () => {
                   <label className="text-sm font-medium text-muted-foreground">Topic ID (HCS)</label>
                   <div className="flex items-center gap-2 mt-1">
                     <code className="text-sm bg-muted px-2 py-1 rounded">{invoice.topicId}</code>
-                    <Button size="sm" variant="ghost">
-                      <ExternalLink className="h-3 w-3" />
-                    </Button>
+                    <a 
+                      href={`https://hashscan.io/testnet/topic/${invoice.topicId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <Button size="sm" variant="ghost">
+                        <ExternalLink className="h-3 w-3" />
+                      </Button>
+                    </a>
                   </div>
                 </div>
               )}
@@ -334,58 +548,66 @@ const InvoiceDetail: React.FC = () => {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                {fundings.map((funding) => (
+                {fundings.map((funding: any) => (
                   <div key={funding.id} className="border rounded-lg p-4 space-y-3">
                     <div className="flex justify-between items-start">
                       <div>
                         <p className="font-medium">${funding.amount}</p>
                         <p className="text-sm text-muted-foreground">
-                          Status: {funding.status}
+                          {funding.investor?.name || 'Unknown Investor'}
                         </p>
-                        {funding.interestRate && (
-                          <p className="text-sm text-muted-foreground">
-                            Interest Rate: {funding.interestRate}%
-                          </p>
-                        )}
-                        {funding.expectedReturn && (
-                          <p className="text-sm text-muted-foreground">
-                            Expected Return: ${funding.expectedReturn}
-                          </p>
-                        )}
                       </div>
-                      <div className="flex gap-2">
-                        {funding.status === 'ACTIVE' && (
-                          <>
-                            <Button
-                              size="sm"
-                              onClick={() => releaseFundingMutation.mutate(funding.id)}
-                              disabled={releaseFundingMutation.isPending}
-                            >
-                              Release
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => refundFundingMutation.mutate(funding.id)}
-                              disabled={refundFundingMutation.isPending}
-                            >
-                              Refund
-                            </Button>
-                          </>
-                        )}
-                      </div>
+                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                        funding.status === 'ACTIVE' ? 'bg-green-100 text-green-800' :
+                        funding.status === 'RELEASED' ? 'bg-blue-100 text-blue-800' :
+                        'bg-gray-100 text-gray-800'
+                      }`}>
+                        {funding.status}
+                      </span>
                     </div>
                     
-                    {/* Escrow Details */}
-                    {funding.escrowId && (
+                    {funding.interestRate && (
                       <div>
-                        <label className="text-sm font-medium text-muted-foreground">Escrow Contract ID</label>
-                        <div className="flex items-center gap-2 mt-1">
-                          <code className="text-sm bg-muted px-2 py-1 rounded">{funding.escrowId}</code>
-                          <Button size="sm" variant="ghost">
+                        <p className="text-sm text-muted-foreground">Interest Rate</p>
+                        <p className="font-medium">{funding.interestRate}%</p>
+                      </div>
+                    )}
+                    
+                    {funding.status === 'ACTIVE' && (
+                      <div className="flex gap-2">
+                        <Button 
+                          size="sm" 
+                          onClick={() => releaseFundingMutation.mutate(funding.id)}
+                          disabled={releaseFundingMutation.isPending}
+                          className="bg-green-600 hover:bg-green-700"
+                        >
+                          {releaseFundingMutation.isPending ? 'Releasing...' : 'Release Funds'}
+                        </Button>
+                        <Button 
+                          size="sm" 
+                          variant="outline"
+                          onClick={() => refundFundingMutation.mutate(funding.id)}
+                          disabled={refundFundingMutation.isPending}
+                        >
+                          {refundFundingMutation.isPending ? 'Refunding...' : 'Refund'}
+                        </Button>
+                      </div>
+                    )}
+                    
+                    {funding.status === 'RELEASED' && (
+                      <div className="flex items-center gap-2 text-green-600">
+                        <CheckCircle className="h-4 w-4" />
+                        <span className="text-sm font-medium">Funds Released</span>
+                        {funding.releaseTransactionId && (
+                          <a 
+                            href={`https://hashscan.io/testnet/transaction/${funding.releaseTransactionId}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:text-blue-800"
+                          >
                             <ExternalLink className="h-3 w-3" />
-                          </Button>
-                        </div>
+                          </a>
+                        )}
                       </div>
                     )}
                     
@@ -396,6 +618,50 @@ const InvoiceDetail: React.FC = () => {
               </CardContent>
             </Card>
           )}
+
+          {/* HCS Timeline - Real-time on-chain status updates */}
+          <HCSTimeline 
+            invoiceId={invoice.id} 
+            className="mb-6"
+          />
+
+          {/* Blockchain Proof Tray */}
+          <ProofTray 
+            transactions={[
+              // Invoice tokenization proof
+              ...(invoice.tokenId ? [{
+                id: `invoice-${invoice.id}`,
+                type: 'invoice_tokenization' as const,
+                status: 'completed' as const,
+                timestamp: invoice.createdAt,
+                amount: invoice.amount,
+                links: {
+                  hashscan: `https://hashscan.io/testnet/token/${invoice.tokenId}`,
+                  ...(invoice.mintTransactionId && {
+                    transaction: `https://hashscan.io/testnet/transaction/${invoice.mintTransactionId}`
+                  })
+                }
+              }] : []),
+              // Funding proofs
+              ...(fundings?.map(funding => ({
+                id: `funding-${funding.id}`,
+                type: 'funding_disbursement' as const,
+                status: funding.status === 'ACTIVE' ? 'completed' as const : 'pending' as const,
+                timestamp: funding.createdAt,
+                amount: funding.amount,
+                links: {
+                  ...(funding.transactionId && {
+                    transaction: `https://hashscan.io/testnet/transaction/${funding.transactionId}`,
+                    hashscan: `https://hashscan.io/testnet/transaction/${funding.transactionId}`
+                  }),
+                  ...(funding.escrowId && {
+                    contract: `https://hashscan.io/testnet/contract/${funding.escrowId}`
+                  })
+                }
+              })) || [])
+            ]}
+            className="mb-6"
+          />
 
           {/* Status Timeline */}
           <Card>
@@ -416,7 +682,7 @@ const InvoiceDetail: React.FC = () => {
                   </div>
                 </div>
                 
-                {invoice.fundedAt && (
+                {fundings && fundings.length > 0 && fundings[0].fundedAt && (
                   <div className="flex items-center gap-3">
                     <div className="flex-shrink-0">
                       <CheckCircle className="h-5 w-5 text-green-500" />
@@ -424,13 +690,13 @@ const InvoiceDetail: React.FC = () => {
                     <div>
                       <p className="font-medium">Invoice Funded</p>
                       <p className="text-sm text-muted-foreground">
-                        {new Date(invoice.fundedAt).toLocaleDateString()}
+                        {new Date(fundings[0].fundedAt).toLocaleDateString()}
                       </p>
                     </div>
                   </div>
                 )}
                 
-                {invoice.paidAt && (
+                {invoice.status === 'PAID' && (
                   <div className="flex items-center gap-3">
                     <div className="flex-shrink-0">
                       <CheckCircle className="h-5 w-5 text-green-500" />
@@ -438,7 +704,7 @@ const InvoiceDetail: React.FC = () => {
                     <div>
                       <p className="font-medium">Invoice Paid</p>
                       <p className="text-sm text-muted-foreground">
-                        {new Date(invoice.paidAt).toLocaleDateString()}
+                        {new Date(invoice.updatedAt).toLocaleDateString()}
                       </p>
                     </div>
                   </div>
@@ -448,6 +714,17 @@ const InvoiceDetail: React.FC = () => {
           </Card>
         </div>
       </div>
+
+      {/* Wallet Funding Modal */}
+      <WalletFundingModal
+        isOpen={showFundingModal}
+        onClose={() => setShowFundingModal(false)}
+        invoice={invoice}
+        onSuccess={() => {
+          setShowFundingModal(false)
+          // Refresh data will be handled by react-query cache invalidation
+        }}
+      />
     </div>
   )
 }

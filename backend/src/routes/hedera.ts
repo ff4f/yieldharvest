@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyPluginOptions, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { authenticate, requireRole, UserRole } from '../middleware/auth';
+import { walletJwtGuard, walletSupplierGuard, walletInvestorGuard, walletAdminGuard } from '../middleware/auth.middleware';
 import { validate, hederaSchemas, paramSchemas } from '../middleware/validation';
 import { auditLogger } from '../utils/logger';
 
@@ -55,7 +55,7 @@ export async function hederaRoutes(
 
   // Create NFT collection for invoices
   fastify.post('/nft/collections', {
-    preHandler: [authenticate, requireRole([UserRole.ADMIN]), validate(hederaSchemas.createToken)],
+    preHandler: [walletAdminGuard, validate(createNFTCollectionSchema)],
     schema: {
       tags: ['hedera'],
       summary: 'Create NFT collection for invoices',
@@ -75,6 +75,12 @@ export async function hederaRoutes(
             tokenId: { type: 'string' },
             transactionId: { type: 'string' },
             hashScanUrl: { type: 'string' },
+          },
+        },
+        400: {
+          type: 'object',
+          properties: {
+            error: { type: 'string' },
           },
         },
       },
@@ -98,47 +104,11 @@ export async function hederaRoutes(
     }
   });
 
-  // Create HCS topic
-  fastify.post('/hcs/topics', {
-    preHandler: [authenticate, requireRole([UserRole.ADMIN, UserRole.SUPPLIER]), validate(hederaSchemas.submitMessage)],
-    schema: {
-      tags: ['hedera'],
-      summary: 'Create HCS topic for invoice events',
-      body: {
-        type: 'object',
-        properties: {
-          memo: { type: 'string' },
-        },
-      },
-      response: {
-        201: {
-          type: 'object',
-          properties: {
-            topicId: { type: 'string' },
-            transactionId: { type: 'string' },
-            hashScanUrl: { type: 'string' },
-          },
-        },
-      },
-    },
-  }, async (request, reply) => {
-    try {
-      const body = createTopicSchema.parse(request.body);
-      const result = await fastify.hedera.createTopic(body.memo);
-      
-      return reply.code(201).send({
-        ...result,
-        hashScanUrl: `https://hashscan.io/testnet/topic/${result.topicId}`,
-      });
-    } catch (error) {
-      fastify.log.error(error);
-      return reply.code(400).send({ error: 'Failed to create HCS topic' });
-    }
-  });
+
 
   // Get transaction details
   fastify.get('/transactions/:id', {
-    preHandler: [authenticate, requireRole([UserRole.ADMIN, UserRole.SUPPLIER, UserRole.INVESTOR])],
+    preHandler: [walletJwtGuard],
     schema: {
       tags: ['hedera'],
       summary: 'Get transaction details',
@@ -162,7 +132,7 @@ export async function hederaRoutes(
 
   // Get topic messages
   fastify.get('/topics/:topicId/messages', {
-    preHandler: [authenticate, requireRole([UserRole.ADMIN, UserRole.SUPPLIER, UserRole.INVESTOR])],
+    preHandler: [walletJwtGuard],
     schema: {
       tags: ['hedera'],
       summary: 'Get HCS topic messages',
@@ -194,7 +164,7 @@ export async function hederaRoutes(
 
   // Get NFT info
   fastify.get('/nft/:tokenId/:serialNumber', {
-    preHandler: [authenticate, requireRole([UserRole.ADMIN, UserRole.SUPPLIER, UserRole.INVESTOR])],
+    preHandler: [walletJwtGuard],
     schema: {
       tags: ['hedera'],
       summary: 'Get NFT information',
@@ -220,7 +190,7 @@ export async function hederaRoutes(
 
   // Get file contents
   fastify.get('/files/:fileId', {
-    preHandler: [authenticate, requireRole([UserRole.ADMIN, UserRole.SUPPLIER, UserRole.INVESTOR])],
+    preHandler: [walletJwtGuard],
     schema: {
       tags: ['hedera'],
       summary: 'Get HFS file information',

@@ -21,10 +21,10 @@ class WebSocketService {
   private clients: Map<string, WebSocketClient> = new Map();
   private pingInterval: NodeJS.Timeout | null = null;
   private cleanupInterval: NodeJS.Timeout | null = null;
+  private initialized: boolean = false;
 
   constructor() {
-    this.startPingInterval();
-    this.startCleanupInterval();
+    // Don't start intervals in constructor to avoid issues in tests
   }
 
   /**
@@ -34,56 +34,67 @@ class WebSocketService {
     try {
       await fastify.register(require('@fastify/websocket'));
       
+      // Start intervals only when actually initializing
+      if (!this.initialized) {
+        this.startPingInterval();
+        this.startCleanupInterval();
+        this.initialized = true;
+      }
+      
       const self = this;
       
       // WebSocket route for real-time updates
-      fastify.register(async function (fastify: FastifyInstance) {
-        fastify.get('/ws/milestones', { websocket: true }, (connection: any, req: any) => {
-          const clientId = self.generateClientId();
-          const client: WebSocketClient = {
-            id: clientId,
-            ws: connection.socket,
-            subscriptions: new Set(),
-            lastPing: Date.now()
-          };
+      fastify.get('/ws', { websocket: true }, (connection, req) => {
+        const clientId = self.generateClientId();
+        const client: WebSocketClient = {
+          id: clientId,
+          ws: connection.socket as unknown as WebSocket,
+          subscriptions: new Set(),
+          lastPing: Date.now()
+        };
 
-          self.clients.set(clientId, client);
-          logger.info(`WebSocket client connected: ${clientId}`);
+        self.clients.set(clientId, client);
+        logger.info(`WebSocket client connected: ${clientId}`);
 
-          // Send welcome message
-          self.sendToClient(clientId, {
-            type: 'connection',
-            data: { clientId, status: 'connected' },
-            timestamp: new Date().toISOString()
-          });
+        // Send welcome message
+        self.sendToClient(clientId, {
+          type: 'connection',
+          data: { clientId, status: 'connected' },
+          timestamp: new Date().toISOString()
+        });
 
-          // Handle incoming messages
-          connection.socket.on('message', (message: any) => {
-            try {
-              const data = JSON.parse(message.toString());
-              self.handleClientMessage(clientId, data);
-            } catch (error) {
-              logger.error('Invalid WebSocket message:', error);
-            }
-          });
+        // Handle incoming messages
+        connection.socket.on('message', (message: any) => {
+          try {
+            const data = JSON.parse(message.toString());
+            self.handleClientMessage(clientId, data);
+          } catch (error) {
+            logger.error({
+              msg: 'Invalid WebSocket message',
+              error: error instanceof Error ? error.message : String(error)
+            });
+          }
+        });
 
-          // Handle client disconnect
-          connection.socket.on('close', () => {
-            self.clients.delete(clientId);
-            logger.info(`WebSocket client disconnected: ${clientId}`);
-          });
+        // Handle client disconnect
+        connection.socket.on('close', () => {
+          self.clients.delete(clientId);
+          logger.info(`WebSocket client disconnected: ${clientId}`);
+        });
 
-          // Handle errors
-          connection.socket.on('error', (error: any) => {
-            logger.error(`WebSocket error for client ${clientId}:`, error);
-            self.clients.delete(clientId);
-          });
+        // Handle errors
+        connection.socket.on('error', (error: any) => {
+          logger.error(`WebSocket error for client ${clientId}:`, error);
+          self.clients.delete(clientId);
         });
       });
 
       logger.info('WebSocket service initialized');
     } catch (error) {
-      logger.error('Failed to initialize WebSocket service:', error);
+      logger.error({
+        msg: 'Failed to initialize WebSocket service',
+        error: error instanceof Error ? error.message : String(error)
+      });
       throw error;
     }
   }
@@ -156,7 +167,10 @@ class WebSocketService {
       client.ws.send(JSON.stringify(message));
       return true;
     } catch (error) {
-      logger.error(`Failed to send message to client ${clientId}:`, error);
+      logger.error({
+        msg: `Failed to send message to client ${clientId}`,
+        error: error instanceof Error ? error.message : String(error)
+      });
       this.clients.delete(clientId);
       return false;
     }
@@ -200,7 +214,10 @@ class WebSocketService {
           try {
             client.ws.ping();
           } catch (error) {
-            logger.error(`Failed to ping client ${clientId}:`, error);
+            logger.error({
+              msg: `Failed to ping client ${clientId}`,
+              error: error instanceof Error ? error.message : String(error)
+            });
             this.clients.delete(clientId);
           }
         } else {
@@ -254,9 +271,11 @@ class WebSocketService {
   cleanup() {
     if (this.pingInterval) {
       clearInterval(this.pingInterval);
+      this.pingInterval = null;
     }
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
     }
 
     this.clients.forEach((client, clientId) => {
@@ -267,6 +286,8 @@ class WebSocketService {
       }
     });
     this.clients.clear();
+    
+    this.initialized = false;
 
     logger.info('WebSocket service cleaned up');
   }

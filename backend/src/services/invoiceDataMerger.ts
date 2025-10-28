@@ -90,14 +90,14 @@ export class InvoiceDataMerger {
        }
  
        // If not found in DB, try to create from NFT metadata
-       const nftInfo = await mirrorNodeService.getNftBySerial(tokenId, serialNumber);
+       const nftInfo = await mirrorNodeService.getNFTInfo(tokenId, serialNumber.toString());
        if (nftInfo && nftInfo.metadata) {
          return await this.createMinimalInvoiceFromNft(nftInfo);
        }
  
        return null;
      } catch (error) {
-       logger.error('Error getting detailed invoice:', error);
+       logger.error({ error }, 'Error getting detailed invoice');
        throw error;
      }
    }
@@ -108,14 +108,22 @@ export class InvoiceDataMerger {
   async getEnrichedInvoices(
     page = 1,
     limit = 10,
-    _filters: {
+    filters: {
       status?: string;
       supplierId?: string;
     } = {}
   ): Promise<InvoiceListResponse> {
     try {
-      // Get invoices from database
-      const dbResult = await invoiceService.getAllInvoices(page, limit);
+      let dbResult;
+      
+      // Apply filters
+      if (filters.status) {
+        dbResult = await invoiceService.getInvoicesByStatus(filters.status as any, page, limit);
+      } else if (filters.supplierId) {
+        dbResult = await invoiceService.getInvoicesBySupplier(filters.supplierId, page, limit);
+      } else {
+        dbResult = await invoiceService.getAllInvoices(page, limit);
+      }
       
       // Enrich each invoice with Mirror Node data
       const enrichedInvoices = await Promise.all(
@@ -129,7 +137,7 @@ export class InvoiceDataMerger {
         pagination: dbResult.pagination,
       };
     } catch (error) {
-      logger.error('Failed to get enriched invoices:', error);
+      logger.error({ error }, 'Failed to get enriched invoices');
       throw error;
     }
   }
@@ -146,7 +154,7 @@ export class InvoiceDataMerger {
 
       return this.enrichInvoiceWithMirrorData(invoice);
     } catch (error) {
-      logger.error(`Failed to get enriched invoice ${id}:`, error);
+      logger.error({ id, error }, `Failed to get enriched invoice ${id}`);
       throw error;
     }
   }
@@ -168,7 +176,7 @@ export class InvoiceDataMerger {
 
       // If not found in DB, try to get NFT data from Mirror Node
       // and create a minimal invoice object
-      const nftInfo = await mirrorNodeService.getNftBySerial(tokenId, serialNumber);
+      const nftInfo = await mirrorNodeService.getNFTInfo(tokenId, serialNumber.toString());
       
       if (!nftInfo) {
         return null;
@@ -178,7 +186,7 @@ export class InvoiceDataMerger {
       const minimalInvoice = await this.createMinimalInvoiceFromNft(nftInfo);
       return this.enrichInvoiceWithMirrorData(minimalInvoice);
     } catch (error) {
-      logger.error(`Failed to get enriched invoice by NFT ${tokenId}/${serialNumber}:`, error);
+      logger.error({ tokenId, serialNumber, error }, `Failed to get enriched invoice by NFT ${tokenId}/${serialNumber}`);
       throw error;
     }
   }
@@ -195,9 +203,9 @@ export class InvoiceDataMerger {
     try {
       // Get NFT information if available
       if (invoice.nftTokenId && invoice.nftSerialNumber) {
-        const nftInfo = await mirrorNodeService.getNftBySerial(
+        const nftInfo = await mirrorNodeService.getNFTInfo(
           invoice.nftTokenId,
-          parseInt(invoice.nftSerialNumber)
+          invoice.nftSerialNumber
         );
         
         if (nftInfo) {
@@ -223,18 +231,15 @@ export class InvoiceDataMerger {
 
       // Get file information if available
       if (invoice.fileId) {
-        const fileInfo = await mirrorNodeService.getFileInfo(invoice.fileId);
-        if (fileInfo) {
-          enriched.onChainData!.fileInfo = {
-            fileId: invoice.fileId,
-            size: fileInfo.size,
-            hash: invoice.fileHash,
-          };
-        }
+        // File info is stored in the invoice record itself
+        enriched.onChainData!.fileInfo = {
+          fileId: invoice.fileId,
+          hash: invoice.fileHash,
+        };
       }
 
     } catch (error) {
-      logger.warn(`Failed to enrich invoice ${invoice.id} with Mirror Node data:`, error);
+      logger.warn({ invoiceId: invoice.id, error }, `Failed to enrich invoice ${invoice.id} with Mirror Node data`);
       // Continue without Mirror Node data if there's an error
     }
 
@@ -252,12 +257,15 @@ export class InvoiceDataMerger {
       const cacheKey = CacheKeys.invoiceMessages(topicId, tokenId);
       
       return mirrorNodeCache.getOrSet(cacheKey, async () => {
-        const messages = await mirrorNodeService.getInvoiceMessages(
-          topicId,
-          tokenId
-        );
+        const hcsMessages = await mirrorNodeService.getHCSMessages(topicId);
+        const parsedMessages = mirrorNodeService.parseInvoiceMessages(hcsMessages);
         
-        return messages.map(msg => ({
+        // Filter by tokenId if provided
+        const filteredMessages = tokenId 
+          ? parsedMessages.filter((msg: any) => msg.tokenId === tokenId)
+          : parsedMessages;
+        
+        return filteredMessages.map((msg: any) => ({
           tokenId: msg.tokenId,
           serialNumber: msg.serialNumber,
           status: msg.status,
@@ -267,7 +275,7 @@ export class InvoiceDataMerger {
         }));
       }, 60000); // 1 minute cache
     } catch (error) {
-      logger.warn(`Failed to get invoice timeline for topic ${topicId}:`, error);
+      logger.warn({ topicId, error }, `Failed to get invoice timeline for topic ${topicId}`);
       return [];
     }
   }
@@ -308,7 +316,7 @@ export class InvoiceDataMerger {
       
       return invoice;
     } catch (error) {
-      logger.error(`Failed to find invoice by NFT ${tokenId}/${serialNumber}:`, error);
+      logger.error({ tokenId, serialNumber, error }, `Failed to find invoice by NFT ${tokenId}/${serialNumber}`);
       return null;
     }
   }
@@ -326,7 +334,7 @@ export class InvoiceDataMerger {
           const decodedMetadata = Buffer.from(nftInfo.metadata, 'base64').toString('utf-8');
           metadata = JSON.parse(decodedMetadata);
         } catch (error) {
-          logger.warn('Failed to parse NFT metadata:', error);
+          logger.warn({ error }, 'Failed to parse NFT metadata');
         }
       }
 
@@ -353,7 +361,7 @@ export class InvoiceDataMerger {
         fundings: [],
       };
     } catch (error) {
-      logger.error('Failed to create minimal invoice from NFT:', error);
+      logger.error({ error }, 'Failed to create minimal invoice from NFT');
       throw error;
     }
   }
@@ -396,7 +404,7 @@ export class InvoiceDataMerger {
         totalValue: totalValue._sum.amount || 0,
       };
     } catch (error) {
-      logger.error('Failed to get invoice stats:', error);
+      logger.error({ error }, 'Failed to get invoice stats');
       throw error;
     }
   }

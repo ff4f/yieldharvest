@@ -91,8 +91,8 @@ describe('Milestones API Integration Tests (Mocked)', () => {
 
   beforeAll(async () => {
     // Set test environment variables
-    process.env.HEDERA_ACCOUNT_ID = '0.0.123456';
-    process.env.HEDERA_PRIVATE_KEY = '302e020100300506032b657004220420' + '0'.repeat(64);
+    process.env.OPERATOR_ID = '0.0.123456';
+  process.env.OPERATOR_KEY = '302e020100300506032b657004220420' + '0'.repeat(64);
     process.env.HEDERA_NETWORK = 'testnet';
     process.env.HEDERA_TOPIC_ID = '0.0.123456';
     
@@ -101,8 +101,17 @@ describe('Milestones API Integration Tests (Mocked)', () => {
   });
 
   afterAll(async () => {
-    await app.close();
-  });
+    try {
+      if (app) {
+        await app.close();
+      }
+      // Give time for cleanup
+      await new Promise(resolve => setTimeout(resolve, 100));
+    } catch (error) {
+      // Ignore cleanup errors
+      console.warn('Cleanup error:', error);
+    }
+  }, 30000);
 
   describe('GET /api/milestones/health', () => {
     it('should return health status', async () => {

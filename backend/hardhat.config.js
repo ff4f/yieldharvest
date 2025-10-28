@@ -21,7 +21,7 @@ export default {
       chainId: 296,
       timeout: 120000,
       gas: 3000000,
-      gasPrice: 380000000000,
+      gasPrice: 450000000000, // Increased to meet minimum requirement
     },
     hederaMainnet: {
       url: 'https://mainnet.hashio.io/api', 

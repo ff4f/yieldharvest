@@ -1,34 +1,72 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Plus, TrendingUp, DollarSign, FileText, Users, Loader2, AlertCircle } from 'lucide-react'
+import { 
+  DollarSign, 
+  TrendingUp, 
+  Users, 
+  PieChart,
+  Activity,
+  ExternalLink,
+  Plus,
+  FileText,
+  Wallet
+} from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useInvoices } from '@/hooks/useInvoices'
+import { useDashboardMetrics, useNetworkStats } from '@/hooks/useMirrorNode'
+import { useMilestoneUpdates } from '@/hooks/useWebSocket'
 import { LoadingState } from '@/components/LoadingState'
 import { ErrorState } from '@/components/ErrorState'
+import { ProofPill } from '@/components/ProofPill'
+import { WalletGuard } from '@/components/WalletGuard'
+import { RoleGuard } from '@/components/RoleGuard'
+import { useAuth } from '@/contexts/AuthContext'
+import { useWallet } from '@/contexts/WalletContext'
 import { Invoice } from '@/types/api'
 
 const Dashboard: React.FC = () => {
+  const { user } = useAuth()
+  const { accountId, network } = useWallet()
   const { data: invoicesResponse, isLoading, error } = useInvoices()
+  const { data: mirrorMetrics } = useDashboardMetrics()
+  const { data: networkStats } = useNetworkStats()
+  const [recentUpdates, setRecentUpdates] = useState<any[]>([])
 
-  // Calculate stats from real data
+  // WebSocket for real-time updates
+  useMilestoneUpdates(
+    undefined, // tokenId - listen to all deals
+    undefined, // serial - listen to all invoices
+    (update: any) => {
+      console.log('Real-time update received:', update)
+      setRecentUpdates(prev => [update, ...prev.slice(0, 9)]) // Keep last 10 updates
+    }
+  )
+
+  // Calculate stats from Mirror Node metrics and invoice data
   const getStats = () => {
-    if (!invoicesResponse?.data) return null
+    const invoices = invoicesResponse?.data || []
+    const metrics = mirrorMetrics
 
-    const invoices = invoicesResponse.data
-    const totalInvoices = invoicesResponse.pagination?.total || invoices.length
+    // Use Mirror Node metrics if available, fallback to invoice data
+    const totalInvoices = metrics?.totalNFTs || invoicesResponse?.pagination?.total || invoices.length
+    const totalHCSMessages = metrics?.totalHCSMessages || 0
     const fundedInvoices = invoices.filter(inv => inv.status === 'FUNDED')
     const totalFunded = fundedInvoices.reduce((sum, inv) => sum + parseFloat(inv.amount), 0)
-    const uniqueInvestors = new Set(fundedInvoices.map(inv => inv.supplierId)).size
     const successRate = totalInvoices > 0 ? Math.round((fundedInvoices.length / totalInvoices) * 100) : 0
 
     return [
       {
-        title: 'Total Invoices',
+        title: 'Total Invoices (NFTs)',
         value: totalInvoices.toString(),
         description: `${invoices.filter(inv => inv.status === 'ISSUED').length} pending`,
         icon: FileText,
-        color: 'text-blue-600'
+        color: 'text-blue-600',
+        proof: metrics?.hashScanLinks?.token ? {
+          type: 'token' as const,
+          url: metrics.hashScanLinks.token,
+          label: 'View on HashScan'
+        } : undefined
       },
       {
         title: 'Total Funded',
@@ -38,11 +76,16 @@ const Dashboard: React.FC = () => {
         color: 'text-green-600'
       },
       {
-        title: 'Active Investors',
-        value: uniqueInvestors.toString(),
-        description: 'Unique funding sources',
-        icon: Users,
-        color: 'text-purple-600'
+        title: 'HCS Messages',
+        value: totalHCSMessages.toString(),
+        description: 'Blockchain events recorded',
+        icon: Activity,
+        color: 'text-purple-600',
+        proof: metrics?.hashScanLinks?.topic ? {
+          type: 'topic' as const,
+          url: metrics.hashScanLinks.topic,
+          label: 'View Topic'
+        } : undefined
       },
       {
         title: 'Success Rate',
@@ -107,21 +150,29 @@ const Dashboard: React.FC = () => {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
-          <p className="text-muted-foreground">
-            Welcome back! Here's an overview of your invoice factoring activity.
-          </p>
+    <WalletGuard requireNetwork="testnet">
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
+            <p className="text-muted-foreground">
+              Welcome back, {user?.name || accountId}! Here's an overview of your invoice factoring activity.
+            </p>
+            <div className="flex items-center gap-2 mt-2">
+              <span className="text-xs text-muted-foreground">Connected to:</span>
+              <span className="text-xs font-mono bg-muted px-2 py-1 rounded">{accountId}</span>
+              <span className="text-xs text-muted-foreground">on {network}</span>
+            </div>
+          </div>
+          <RoleGuard requiredRoles={['SUPPLIER', 'ADMIN']}>
+            <Link to="/invoices/create">
+              <Button>
+                <Plus className="mr-2 h-4 w-4" />
+                Create Invoice
+              </Button>
+            </Link>
+          </RoleGuard>
         </div>
-        <Link to="/invoices/create">
-          <Button>
-            <Plus className="mr-2 h-4 w-4" />
-            Create Invoice
-          </Button>
-        </Link>
-      </div>
 
       {/* Stats Grid */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
@@ -140,11 +191,106 @@ const Dashboard: React.FC = () => {
                 <p className="text-xs text-muted-foreground">
                   {stat.description}
                 </p>
+                {stat.proof && (
+                  <div className="mt-2">
+                    <ProofPill
+                      {...stat.proof}
+                      variant="compact"
+                    />
+                  </div>
+                )}
               </CardContent>
             </Card>
           )
         })}
       </div>
+
+      {/* Real-time Updates */}
+      {recentUpdates.length > 0 && (
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Activity className="h-5 w-5 text-green-500" />
+              Real-time Updates
+            </CardTitle>
+            <CardDescription>
+              Live blockchain activity from Mirror Node
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {recentUpdates.slice(0, 5).map((update, index) => (
+                <div key={index} className="flex items-center justify-between p-3 bg-green-50 rounded-lg">
+                  <div className="flex items-center gap-3">
+                    <div className="h-2 w-2 bg-green-500 rounded-full animate-pulse" />
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">
+                        {update.type || 'Blockchain Update'}
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {update.timestamp ? new Date(update.timestamp).toLocaleTimeString() : 'Just now'}
+                      </p>
+                    </div>
+                  </div>
+                  {update.transactionId && (
+                    <a
+                      href={`https://hashscan.io/testnet/transaction/${update.transactionId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-600 hover:text-blue-800"
+                    >
+                      <ExternalLink className="h-4 w-4" />
+                    </a>
+                  )}
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Network Stats */}
+      {networkStats && (
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Activity className="h-5 w-5 text-blue-500" />
+              Hedera Network Status
+            </CardTitle>
+            <CardDescription>
+              Real-time network statistics from Mirror Node
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="text-center">
+                <p className="text-2xl font-bold text-blue-600">
+                  {networkStats.currentBlock?.toLocaleString() || 'N/A'}
+                </p>
+                <p className="text-xs text-gray-500">Current Block</p>
+              </div>
+              <div className="text-center">
+                <p className="text-2xl font-bold text-green-600">
+                  {networkStats.tps?.toFixed(1) || 'N/A'}
+                </p>
+                <p className="text-xs text-gray-500">TPS</p>
+              </div>
+              <div className="text-center">
+                <p className="text-2xl font-bold text-purple-600">
+                  {networkStats.totalTransactions?.toLocaleString() || 'N/A'}
+                </p>
+                <p className="text-xs text-gray-500">Total Transactions</p>
+              </div>
+              <div className="text-center">
+                <p className="text-2xl font-bold text-orange-600">
+                  {networkStats.networkUtilization?.toFixed(1) || 'N/A'}%
+                </p>
+                <p className="text-xs text-gray-500">Network Utilization</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Recent Activity */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-7">
@@ -229,6 +375,7 @@ const Dashboard: React.FC = () => {
         </Card>
       </div>
     </div>
+    </WalletGuard>
   )
 }
 

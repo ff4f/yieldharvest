@@ -1,0 +1,11 @@
+{
+  "timestamp": "2025-10-07T04:23:58.491Z",
+  "isValid": false,
+  "errors": [
+    "HEDERA_OPERATOR_ID: Required",
+    "HEDERA_OPERATOR_KEY: Required",
+    "HEDERA_MIRROR_NODE_URL: Required"
+  ],
+  "warnings": [],
+  "config": null
+}

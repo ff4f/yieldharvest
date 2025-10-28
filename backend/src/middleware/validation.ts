@@ -10,6 +10,7 @@ const hederaFileIdSchema = z.string().regex(/^0\.0\.[0-9]+$/, 'Invalid Hedera fi
 const hederaTokenIdSchema = z.string().regex(/^0\.0\.[0-9]+$/, 'Invalid Hedera token ID format');
 const hederaTopicIdSchema = z.string().regex(/^0\.0\.[0-9]+$/, 'Invalid Hedera topic ID format');
 const uuidSchema = z.string().uuid('Invalid UUID format');
+const cuidSchema = z.string().regex(/^c[a-z0-9]{24}$/, 'Invalid CUID format');
 const emailSchema = z.string().email('Invalid email format');
 const passwordSchema = z.string().min(8, 'Password must be at least 8 characters').max(128, 'Password too long');
 const phoneSchema = z.string().regex(/^\+?[1-9]\d{1,14}$/, 'Invalid phone number format').optional();
@@ -108,7 +109,7 @@ export const invoiceSchemas = {
 
   list: paginationSchema.extend({
     status: z.enum(['draft', 'issued', 'funded', 'paid', 'overdue', 'cancelled']).optional(),
-    supplierId: uuidSchema.optional(),
+    supplierId: cuidSchema.optional(),
     minAmount: z.coerce.number().positive().optional(),
     maxAmount: z.coerce.number().positive().optional(),
     ...dateRangeFields,
@@ -123,11 +124,13 @@ export const invoiceSchemas = {
 // Funding validation schemas
 export const fundingSchemas = {
   create: z.object({
-    invoiceId: uuidSchema,
+    invoiceId: cuidSchema,
     amount: z.number().positive('Amount must be positive').max(1000000000, 'Amount too large'),
     interestRate: z.number().min(0, 'Interest rate cannot be negative').max(100, 'Interest rate too high'),
     termDays: z.number().int().min(1, 'Term must be at least 1 day').max(365, 'Term cannot exceed 365 days'),
     investorAccountId: hederaAccountIdSchema,
+    supplierAccountId: hederaAccountIdSchema,
+    nftSerialNumber: z.number().int().positive('NFT serial number must be positive'),
     conditions: z.string().max(1000, 'Conditions too long').optional(),
   }),
 
@@ -140,8 +143,8 @@ export const fundingSchemas = {
 
   list: paginationSchema.extend({
     status: z.enum(['pending', 'active', 'completed', 'cancelled']).optional(),
-    investorId: uuidSchema.optional(),
-    invoiceId: uuidSchema.optional(),
+    investorId: cuidSchema.optional(),
+    invoiceId: cuidSchema.optional(),
     minAmount: z.coerce.number().positive().optional(),
     maxAmount: z.coerce.number().positive().optional(),
     ...dateRangeFields,
@@ -206,7 +209,7 @@ export const contractSchemas = {
   }),
 
   escrowCreate: z.object({
-    invoiceId: uuidSchema,
+    invoiceId: cuidSchema,
     amount: z.number().positive('Amount must be positive'),
     supplierAccountId: hederaAccountIdSchema,
     investorAccountId: hederaAccountIdSchema,
@@ -217,7 +220,7 @@ export const contractSchemas = {
 // Parameter validation schemas
 export const paramSchemas = {
   id: z.object({
-    id: uuidSchema,
+    id: cuidSchema,
   }),
 
   hederaAccountId: z.object({

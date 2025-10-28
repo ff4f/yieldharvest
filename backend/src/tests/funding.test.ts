@@ -25,12 +25,11 @@ describe('Funding Service Tests', () => {
       expect(investorId.length).toBeGreaterThan(0);
     });
 
-    it('should validate buyer address format', () => {
-      const buyerAddress = '0x742d35Cc6634C0532925a3b8D4C9db96DfbB8b2f';
+    it('should validate supplier account ID format', () => {
+      const supplierAccountId = '0.0.12345';
       
-      expect(typeof buyerAddress).toBe('string');
-      expect(buyerAddress.startsWith('0x')).toBe(true);
-      expect(buyerAddress.length).toBe(42);
+      expect(typeof supplierAccountId).toBe('string');
+      expect(supplierAccountId).toMatch(/^0\.0\.\d+$/);
     });
   });
 
@@ -107,15 +106,18 @@ describe('Funding Service Tests', () => {
         invoiceId: 'test-invoice-123',
         investorId: 'test-investor-456',
         amount: '1000',
-        buyerAddress: '0x742d35Cc6634C0532925a3b8D4C9db96DfbB8b2f',
+        supplierAccountId: '0.0.12345',
+        nftSerialNumber: 1,
       };
 
       expect(typeof createParams.invoiceId).toBe('string');
       expect(typeof createParams.investorId).toBe('string');
       expect(typeof createParams.amount).toBe('string');
-      expect(typeof createParams.buyerAddress).toBe('string');
+      expect(typeof createParams.supplierAccountId).toBe('string');
+      expect(typeof createParams.nftSerialNumber).toBe('number');
       expect(parseFloat(createParams.amount)).toBeGreaterThan(0);
-      expect(createParams.buyerAddress.startsWith('0x')).toBe(true);
+      expect(createParams.supplierAccountId).toMatch(/^0\.0\.\d+$/);
+      expect(createParams.nftSerialNumber).toBeGreaterThan(0);
     });
   });
 

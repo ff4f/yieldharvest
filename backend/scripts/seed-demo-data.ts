@@ -1,349 +1,403 @@
-#!/usr/bin/env ts-node
-
-/**
- * Demo Data Seeder for YieldHarvest
- * Creates sample invoices, users, and basic Hedera interactions for demo purposes
- */
+#!/usr/bin/env tsx
 
 import { PrismaClient } from '@prisma/client';
-import { HederaService } from '../src/services/hedera';
-import { logger } from '../src/utils/logger';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-// Get __dirname equivalent for ES modules
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { faker } from '@faker-js/faker';
 
 const prisma = new PrismaClient();
-// Initialize Hedera service only if proper credentials are available
-let hederaService: HederaService | null = null;
-try {
-  if (process.env.HEDERA_OPERATOR_ID && process.env.HEDERA_OPERATOR_KEY && process.env.HEDERA_OPERATOR_KEY !== 'mock-key') {
-    hederaService = new HederaService({
-      operatorId: process.env.HEDERA_OPERATOR_ID,
-      operatorKey: process.env.HEDERA_OPERATOR_KEY,
-      network: process.env.HEDERA_NETWORK || 'testnet',
-      mirrorNodeUrl: process.env.HEDERA_MIRROR_NODE_URL || 'https://testnet.mirrornode.hedera.com'
-    });
-    logger.info('Hedera service initialized successfully');
-  } else {
-    logger.warn('Hedera credentials not configured - skipping on-chain operations');
-  }
-} catch (error) {
-  logger.warn('Failed to initialize Hedera service - running in demo mode only:', error);
+
+interface DemoUser {
+  id: string;
+  name: string;
+  email: string;
+  accountId: string;
+  role: 'SUPPLIER' | 'BUYER' | 'AGENT' | 'INVESTOR';
 }
 
-// Demo data configuration
-const DEMO_INVOICES = [
-  {
-    customerName: 'TechCorp Solutions',
-    amount: 15000,
-    currency: 'HBAR',
-    dueDate: new Date(Date.now() + 45 * 24 * 60 * 60 * 1000),
-    description: 'Enterprise Software Development - Phase 1',
-    status: 'ISSUED' as const
-  },
-  {
-    customerName: 'Global Manufacturing Inc',
-    amount: 25000,
-    currency: 'HBAR',
-    dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-    description: 'Supply Chain Management System',
-    status: 'FUNDING_REQUESTED' as const
-  },
-  {
-    customerName: 'FinanceFlow Ltd',
-    amount: 12000,
-    currency: 'HBAR',
-    dueDate: new Date(Date.now() + 20 * 24 * 60 * 60 * 1000),
-    description: 'Payment Processing Integration',
-    status: 'FUNDED' as const
-  },
-  {
-    customerName: 'Healthcare Systems Co',
-    amount: 18000,
-    currency: 'HBAR',
-    dueDate: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
-    description: 'Patient Management Portal',
-    status: 'PAID' as const
-  },
-  {
-    customerName: 'EduTech Innovations',
-    amount: 8500,
-    currency: 'HBAR',
-    dueDate: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000),
-    description: 'Learning Management System Module',
-    status: 'ISSUED' as const
-  }
-];
+interface DemoInvoice {
+  id: string;
+  invoiceNumber: string;
+  supplierId: string;
+  buyerId?: string;
+  agentId?: string;
+  amount: number;
+  currency: string;
+  dueDate: Date;
+  status: string;
+  description: string;
+  nftTokenId?: string;
+  nftSerialNumber?: string;
+  fileId?: string;
+  fileHash?: string;
+  topicId?: string;
+}
 
-const DEMO_USERS = [
-  {
-    id: 'demo-supplier-1',
-    email: 'supplier@yieldharvest.demo',
-    name: 'YieldHarvest Supplier',
-    role: 'SUPPLIER' as const,
-    hederaAccountId: process.env.HEDERA_OPERATOR_ID || '0.0.123456'
-  },
-  {
-    id: 'demo-investor-1',
-    email: 'investor@yieldharvest.demo',
-    name: 'YieldHarvest Investor',
-    role: 'INVESTOR' as const,
-    hederaAccountId: process.env.HEDERA_INVESTOR_ID || '0.0.123457'
-  },
-  {
-    id: 'demo-customer-1',
-    email: 'customer@yieldharvest.demo',
-    name: 'YieldHarvest Customer',
-    role: 'CUSTOMER' as const,
-    hederaAccountId: process.env.HEDERA_CUSTOMER_ID || '0.0.123458'
-  }
-];
+async function clearExistingData() {
+  console.log('🧹 Clearing existing demo data...');
+  
+  await prisma.funding.deleteMany();
+  await prisma.invoiceEvent.deleteMany();
+  await prisma.invoice.deleteMany();
+  await prisma.investor.deleteMany();
+  await prisma.user.deleteMany();
+  
+  console.log('✅ Existing data cleared');
+}
 
-class DemoSeeder {
-  private async createSamplePDF(fileName: string): Promise<string> {
-    const content = `
-# Invoice Document
-
-**Invoice Number:** ${fileName.replace('.pdf', '')}
-**Date:** ${new Date().toLocaleDateString()}
-**Amount:** Sample Amount
-**Description:** Demo invoice for YieldHarvest platform
-
----
-
-This is a sample invoice document generated for demonstration purposes.
-In a real implementation, this would be a properly formatted PDF.
-    `;
+async function createDemoUsers(): Promise<DemoUser[]> {
+  console.log('👥 Creating demo users...');
+  
+  const users: DemoUser[] = [
+    // Suppliers
+    {
+      id: '',
+      name: 'TechCorp Solutions',
+      email: 'supplier@techcorp.com',
+      accountId: '0.0.1001',
+      role: 'SUPPLIER'
+    },
+    {
+      id: '',
+      name: 'Global Manufacturing Ltd',
+      email: 'supplier@globalmanuf.com',
+      accountId: '0.0.1002',
+      role: 'SUPPLIER'
+    },
+    {
+      id: '',
+      name: 'Green Energy Systems',
+      email: 'supplier@greenenergy.com',
+      accountId: '0.0.1003',
+      role: 'SUPPLIER'
+    },
     
-    const filePath = path.join(__dirname, '../temp', fileName);
-    const tempDir = path.dirname(filePath);
+    // Buyers
+    {
+      id: '',
+      name: 'Retail Giant Corp',
+      email: 'buyer@retailgiant.com',
+      accountId: '0.0.2001',
+      role: 'BUYER'
+    },
+    {
+      id: '',
+      name: 'Construction Mega Inc',
+      email: 'buyer@constructionmega.com',
+      accountId: '0.0.2002',
+      role: 'BUYER'
+    },
     
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
+    // Agents/Investors
+    {
+      id: '',
+      name: 'FinTech Ventures',
+      email: 'agent@fintechventures.com',
+      accountId: '0.0.3001',
+      role: 'AGENT'
+    },
+    {
+      id: '',
+      name: 'Capital Growth Partners',
+      email: 'investor@capitalgrowth.com',
+      accountId: '0.0.3002',
+      role: 'INVESTOR'
+    },
+    {
+      id: '',
+      name: 'Blockchain Investment Fund',
+      email: 'investor@blockchainfund.com',
+      accountId: '0.0.3003',
+      role: 'INVESTOR'
     }
-    
-    fs.writeFileSync(filePath, content);
-    return filePath;
-  }
+  ];
 
-  private async logToHCS(eventType: string, invoiceId: string, data: any) {
-    if (!hederaService) {
-      logger.info(`[DEMO MODE] Would log ${eventType} to HCS for invoice ${invoiceId}`);
-      return { sequenceNumber: 'demo-seq-' + Date.now() };
-    }
-    
-    try {
-      const message = {
-        eventType,
-        invoiceId,
-        timestamp: new Date().toISOString(),
-        data
-      };
-
-      const topicId = process.env.HEDERA_TOPIC_ID || '0.0.789012';
-      const result = await hederaService.submitTopicMessage(
-        topicId,
-        message
-      );
-      
-      logger.info(`Logged ${eventType} to HCS:`, {
-        topicId: topicId,
-        sequenceNumber: result.sequenceNumber
-      });
-      
-      return result;
-    } catch (error) {
-      logger.error(`Failed to log ${eventType} to HCS:`, error);
-      return null;
-    }
-  }
-
-  async seedUsers() {
-    logger.info('Seeding demo users...');
-    
-    for (const userData of DEMO_USERS) {
-      await prisma.user.upsert({
-        where: { email: userData.email },
-        update: userData,
-        create: userData
-      });
-      
-      logger.info(`Created/updated user: ${userData.name}`);
-    }
-  }
-
-  async seedInvoices() {
-    logger.info('Seeding demo invoices...');
-    
-    try {
-      const supplier = await prisma.user.findFirst({ where: { role: 'SUPPLIER' } });
-      const customer = await prisma.user.findFirst({ where: { role: 'CUSTOMER' } });
-      
-      if (!supplier || !customer) {
-        throw new Error('Supplier and customer users must exist before seeding invoices');
+  const createdUsers: DemoUser[] = [];
+  
+  for (const userData of users) {
+    const user = await prisma.user.create({
+      data: {
+        name: userData.name,
+        email: userData.email,
+        accountId: userData.accountId,
+        roles: JSON.stringify([userData.role])
       }
-      
-      logger.info(`Found supplier: ${supplier.name}, customer: ${customer.name}`);
-
-    for (let i = 0; i < DEMO_INVOICES.length; i++) {
-      const invoiceData = DEMO_INVOICES[i];
-      
-      // Create sample PDF
-      const fileName = `invoice-${Date.now()}-${i}.pdf`;
-      const filePath = await this.createSamplePDF(fileName);
-      
-      // Create invoice in database
-      const invoice = await prisma.invoice.create({
+    });
+    
+    createdUsers.push({
+      ...userData,
+      id: user.id
+    });
+    
+    // Create investor profiles for agents and investors
+    if (userData.role === 'AGENT' || userData.role === 'INVESTOR') {
+      await prisma.investor.create({
         data: {
-          invoiceNumber: `INV-${Date.now()}-${i}`,
-          amount: invoiceData.amount,
-          currency: invoiceData.currency,
-          dueDate: invoiceData.dueDate,
-          description: invoiceData.description,
-          status: invoiceData.status,
-          supplierId: supplier.id,
-          buyerId: customer.id,
-          // Basic file info (HFS upload would happen here in full implementation)
-          fileId: `demo-file-${i}`,
-          fileHash: `demo-hash-${i}`,
-          // Demo NFT info
-          nftTokenId: `0.0.${100000 + i}`,
-          nftSerialNumber: (i + 1).toString()
+          userId: user.id,
+          availableBalance: faker.number.float({ min: 10000, max: 100000, fractionDigits: 2 }),
+          totalInvested: faker.number.float({ min: 0, max: 50000, fractionDigits: 2 })
         }
       });
-      
-      // Log to HCS
-      await this.logToHCS('INVOICE_CREATED', invoice.id, {
-        invoiceNumber: invoice.invoiceNumber,
-        amount: invoice.amount,
-        status: invoice.status
-      });
-      
-      // Create funding if status requires it
-      if (invoiceData.status === 'FUNDED' || invoiceData.status === 'PAID') {
-        const investor = await prisma.user.findFirst({ where: { role: 'INVESTOR' } });
-        if (investor) {
-          await prisma.funding.create({
-            data: {
-              invoiceId: invoice.id,
-              investorId: investor.id,
-              amount: Math.floor(invoiceData.amount * 0.8), // 80% advance
-              status: invoiceData.status === 'PAID' ? 'RELEASED' : 'ACTIVE',
-              fundedAt: new Date(),
-              // Note: advanceRate, feeRate, fundingPeriod not in schema
-            }
-          });
-          
-          await this.logToHCS('FUNDING_PROVIDED', invoice.id, {
-            investorId: investor.id,
-            amount: Math.floor(invoiceData.amount * 0.8)
-          });
-        }
-      }
-      
-      logger.info(`Created invoice: ${invoice.invoiceNumber} (${invoiceData.status})`);
-      
-      // Clean up temp file
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
-    }
-    } catch (error) {
-      console.error('Error seeding invoices:');
-      console.error(error);
-      logger.error('Error seeding invoices:', {
-        message: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined
-      });
-      throw error;
     }
   }
+  
+  console.log(`✅ Created ${createdUsers.length} demo users`);
+  return createdUsers;
+}
 
-  async generateProofLinks() {
-    logger.info('\n=== DEMO PROOF LINKS ===');
+async function createDemoInvoices(users: DemoUser[]): Promise<DemoInvoice[]> {
+  console.log('📄 Creating demo invoices...');
+  
+  const suppliers = users.filter(u => u.role === 'SUPPLIER');
+  const buyers = users.filter(u => u.role === 'BUYER');
+  const agents = users.filter(u => u.role === 'AGENT');
+  
+  const invoiceStatuses = ['ISSUED', 'FUNDED', 'PAID'];
+  const currencies = ['USD', 'HBAR'];
+  
+  const invoices: DemoInvoice[] = [];
+  
+  // Create 15 demo invoices
+  for (let i = 1; i <= 15; i++) {
+    const supplier = faker.helpers.arrayElement(suppliers);
+    const buyer = faker.helpers.arrayElement(buyers);
+    const agent = Math.random() > 0.3 ? faker.helpers.arrayElement(agents) : undefined;
+    const status = faker.helpers.arrayElement(invoiceStatuses);
+    const currency = faker.helpers.arrayElement(currencies);
     
-    const invoices = await prisma.invoice.findMany({
-      include: { fundings: true }
+    const amount = faker.number.float({ min: 1000, max: 50000, fractionDigits: 2 });
+    const dueDate = faker.date.future({ years: 1 });
+    
+    const invoiceData: Omit<DemoInvoice, 'id'> = {
+      invoiceNumber: `INV-${String(i).padStart(3, '0')}-${faker.string.alphanumeric(4).toUpperCase()}`,
+      supplierId: supplier.id,
+      buyerId: buyer.id,
+      agentId: agent?.id,
+      amount,
+      currency,
+      dueDate,
+      status,
+      description: `${faker.commerce.productName()} - ${faker.commerce.productDescription()}`,
+      nftTokenId: status !== 'ISSUED' ? `0.0.${faker.number.int({ min: 100000, max: 999999 })}` : undefined,
+      nftSerialNumber: status !== 'ISSUED' ? String(faker.number.int({ min: 1, max: 1000 })) : undefined,
+      fileId: status !== 'ISSUED' ? `0.0.${faker.number.int({ min: 100000, max: 999999 })}` : undefined,
+      fileHash: status !== 'ISSUED' ? faker.string.hexadecimal({ length: 64, prefix: '' }) : undefined,
+      topicId: `0.0.${faker.number.int({ min: 6000000, max: 7000000 })}`
+    };
+    
+    const invoice = await prisma.invoice.create({
+      data: invoiceData
     });
     
-    for (const invoice of invoices) {
-      logger.info(`\nInvoice: ${invoice.invoiceNumber}`);
-      logger.info(`- HashScan NFT: https://hashscan.io/testnet/token/${invoice.nftTokenId}`);
-      logger.info(`- HFS File: https://hashscan.io/testnet/file/${invoice.fileId}`);
-      logger.info(`- Mirror Node: https://testnet.mirrornode.hedera.com/api/v1/tokens/${invoice.nftTokenId}/nfts`);
-      
-      if (invoice.fundings.length > 0) {
-         logger.info(`- Funding Status: ${invoice.fundings[0].status}`);
-       }
-    }
+    invoices.push({
+      ...invoiceData,
+      id: invoice.id
+    });
     
-    logger.info('\n=== HCS TOPIC ===');
-    logger.info(`Topic ID: ${process.env.HEDERA_TOPIC_ID || '0.0.789012'}`);
-    logger.info(`HashScan: https://hashscan.io/testnet/topic/${process.env.HEDERA_TOPIC_ID || '0.0.789012'}`);
+    // Create invoice events
+    await createInvoiceEvents(invoice.id, status);
   }
+  
+  console.log(`✅ Created ${invoices.length} demo invoices`);
+  return invoices;
+}
 
-  async cleanup() {
-    logger.info('Cleaning up existing demo data...');
-    
-    await prisma.funding.deleteMany({
-       where: {
-         invoice: {
-           invoiceNumber: {
-             startsWith: 'INV-'
-           }
-         }
-       }
-     });
-    
-    await prisma.invoice.deleteMany({
-      where: {
-        invoiceNumber: {
-          startsWith: 'INV-'
-        }
+async function createInvoiceEvents(invoiceId: string, status: string) {
+  // Always create CREATED event
+  await prisma.invoiceEvent.create({
+    data: {
+      invoiceId,
+      eventType: 'CREATED',
+      description: 'Invoice created in the system',
+      metadata: JSON.stringify({
+        source: 'demo_seeder',
+        timestamp: new Date().toISOString()
+      }),
+      createdAt: faker.date.recent({ days: 30 })
+    }
+  });
+  
+  if (status === 'FUNDED' || status === 'PAID') {
+    // Create NFT_MINTED event
+    await prisma.invoiceEvent.create({
+      data: {
+        invoiceId,
+        eventType: 'NFT_MINTED',
+        description: 'Invoice NFT minted on Hedera',
+        metadata: JSON.stringify({
+          tokenId: `0.0.${faker.number.int({ min: 100000, max: 999999 })}`,
+          serialNumber: faker.number.int({ min: 1, max: 1000 }),
+          transactionId: `0.0.${faker.number.int({ min: 1000, max: 9999 })}@${faker.date.recent().getTime()}`
+        }),
+        hcsMessageId: String(faker.number.int({ min: 1, max: 1000000 })),
+        hcsTimestamp: faker.date.recent({ days: 25 }),
+        transactionId: `0.0.${faker.number.int({ min: 1000, max: 9999 })}@${faker.date.recent().getTime()}`,
+        createdAt: faker.date.recent({ days: 25 })
       }
     });
     
-    await prisma.user.deleteMany({
-      where: {
-        email: {
-          endsWith: '@yieldharvest.demo'
-        }
+    // Create FILE_UPLOADED event
+    await prisma.invoiceEvent.create({
+      data: {
+        invoiceId,
+        eventType: 'FILE_UPLOADED',
+        description: 'Invoice document uploaded to Hedera File Service',
+        metadata: JSON.stringify({
+          fileId: `0.0.${faker.number.int({ min: 100000, max: 999999 })}`,
+          fileHash: faker.string.hexadecimal({ length: 64, prefix: '' }),
+          fileSize: faker.number.int({ min: 1024, max: 1048576 })
+        }),
+        hcsMessageId: String(faker.number.int({ min: 1, max: 1000000 })),
+        hcsTimestamp: faker.date.recent({ days: 20 }),
+        transactionId: `0.0.${faker.number.int({ min: 1000, max: 9999 })}@${faker.date.recent().getTime()}`,
+        createdAt: faker.date.recent({ days: 20 })
+      }
+    });
+    
+    // Create FUNDED event
+    await prisma.invoiceEvent.create({
+      data: {
+        invoiceId,
+        eventType: 'FUNDED',
+        description: 'Invoice funded by investor',
+        metadata: JSON.stringify({
+          fundingAmount: faker.number.float({ min: 500, max: 10000, fractionDigits: 2 }),
+          escrowId: `escrow-${faker.string.alphanumeric(10)}`,
+          investorAccountId: `0.0.${faker.number.int({ min: 3000, max: 4000 })}`
+        }),
+        hcsMessageId: String(faker.number.int({ min: 1, max: 1000000 })),
+        hcsTimestamp: faker.date.recent({ days: 15 }),
+        transactionId: `0.0.${faker.number.int({ min: 1000, max: 9999 })}@${faker.date.recent().getTime()}`,
+        createdAt: faker.date.recent({ days: 15 })
+      }
+    });
+  }
+  
+  if (status === 'PAID') {
+    // Create PAYMENT_RECEIVED event
+    await prisma.invoiceEvent.create({
+      data: {
+        invoiceId,
+        eventType: 'PAYMENT_RECEIVED',
+        description: 'Payment received from buyer',
+        metadata: JSON.stringify({
+          paymentAmount: faker.number.float({ min: 1000, max: 50000, fractionDigits: 2 }),
+          paymentMethod: 'HBAR_TRANSFER',
+          buyerAccountId: `0.0.${faker.number.int({ min: 2000, max: 3000 })}`
+        }),
+        hcsMessageId: String(faker.number.int({ min: 1, max: 1000000 })),
+        hcsTimestamp: faker.date.recent({ days: 5 }),
+        transactionId: `0.0.${faker.number.int({ min: 1000, max: 9999 })}@${faker.date.recent().getTime()}`,
+        createdAt: faker.date.recent({ days: 5 })
       }
     });
   }
 }
+
+async function createDemoFundings(invoices: DemoInvoice[], users: DemoUser[]) {
+  console.log('💰 Creating demo fundings...');
+  
+  const investors = users.filter(u => u.role === 'AGENT' || u.role === 'INVESTOR');
+  const fundedInvoices = invoices.filter(inv => inv.status === 'FUNDED' || inv.status === 'PAID');
+  
+  let fundingCount = 0;
+  
+  for (const invoice of fundedInvoices) {
+    // Create 1-3 fundings per funded invoice
+    const numFundings = faker.number.int({ min: 1, max: 3 });
+    
+    for (let i = 0; i < numFundings; i++) {
+      const investor = faker.helpers.arrayElement(investors);
+      const fundingAmount = faker.number.float({ 
+        min: invoice.amount * 0.1, 
+        max: invoice.amount * 0.8, 
+        fractionDigits: 2 
+      });
+      
+      await prisma.funding.create({
+        data: {
+          invoiceId: invoice.id,
+          investorId: investor.id,
+          amount: fundingAmount,
+          interestRate: faker.number.float({ min: 0.03, max: 0.12, fractionDigits: 4 }),
+          status: invoice.status === 'PAID' ? 'SETTLED' : 'ACTIVE',
+          escrowId: `escrow-${faker.string.alphanumeric(12)}`,
+          transactionHash: `0x${faker.string.hexadecimal({ length: 64, prefix: '' })}`,
+          releaseTransactionHash: invoice.status === 'PAID' ? `0x${faker.string.hexadecimal({ length: 64, prefix: '' })}` : null,
+          fundedAt: faker.date.recent({ days: 20 }),
+          releasedAt: invoice.status === 'PAID' ? faker.date.recent({ days: 5 }) : null,
+          settledAt: invoice.status === 'PAID' ? faker.date.recent({ days: 3 }) : null,
+          createdAt: faker.date.recent({ days: 25 })
+        }
+      });
+      
+      fundingCount++;
+    }
+  }
+  
+  console.log(`✅ Created ${fundingCount} demo fundings`);
+}
+
+async function generateDemoReport() {
+  console.log('\n📊 Demo Data Summary:');
+  
+  const userCount = await prisma.user.count();
+  const invoiceCount = await prisma.invoice.count();
+  const fundingCount = await prisma.funding.count();
+  const eventCount = await prisma.invoiceEvent.count();
+  const investorCount = await prisma.investor.count();
+  
+  console.log(`👥 Users: ${userCount}`);
+  console.log(`📄 Invoices: ${invoiceCount}`);
+  console.log(`💰 Fundings: ${fundingCount}`);
+  console.log(`📝 Events: ${eventCount}`);
+  console.log(`🏦 Investors: ${investorCount}`);
+  
+  // Status breakdown
+  const statusBreakdown = await prisma.invoice.groupBy({
+    by: ['status'],
+    _count: { status: true }
+  });
+  
+  console.log('\n📈 Invoice Status Breakdown:');
+  statusBreakdown.forEach(item => {
+    console.log(`  ${item.status}: ${item._count.status}`);
+  });
+  
+  // Total funding amounts
+  const totalFunding = await prisma.funding.aggregate({
+    _sum: { amount: true },
+    _avg: { amount: true }
+  });
+  
+  console.log(`\n💵 Total Funding: $${totalFunding._sum.amount?.toFixed(2) || '0.00'}`);
+  console.log(`📊 Average Funding: $${totalFunding._avg.amount?.toFixed(2) || '0.00'}`);
+}
+
+
 
 async function main() {
   try {
-    const seeder = new DemoSeeder();
+    console.log('🚀 Starting YieldHarvest Demo Data Seeding...\n');
     
-    logger.info('Starting demo data seeding...');
+    await clearExistingData();
+    const users = await createDemoUsers();
+    const invoices = await createDemoInvoices(users);
+    await createDemoFundings(invoices, users);
+    await generateDemoReport();
     
-    await seeder.cleanup();
-    await seeder.seedUsers();
-    await seeder.seedInvoices();
-    await seeder.generateProofLinks();
+    console.log('\n✅ Demo data seeding completed successfully!');
+    console.log('🎯 Ready for hackathon demonstration!');
     
-    logger.info('Demo data seeding completed successfully!');
   } catch (error) {
-    logger.error('Demo data seeding failed:', {
-      message: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
-      error
-    });
+    console.error('❌ Error seeding demo data:', error);
     process.exit(1);
   } finally {
     await prisma.$disconnect();
   }
 }
 
-// Run if this file is executed directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run the seeder
+if (require.main === module) {
   main();
 }
 
-export { DemoSeeder };
+export { main as seedDemoData };

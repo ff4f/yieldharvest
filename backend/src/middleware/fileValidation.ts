@@ -105,7 +105,8 @@ export class FileValidationService {
       }
       
       // Log validation attempt
-      logger.info('File validation completed', {
+      logger.info({
+        msg: 'File validation completed',
         filename: result.sanitizedFilename,
         fileHash: result.fileHash,
         fileSize: result.fileSize,
@@ -119,7 +120,8 @@ export class FileValidationService {
       result.errors.push(`File validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
       result.isValid = false;
       
-      logger.error('File validation error', {
+      logger.error({
+        msg: 'File validation error',
         filename: originalFilename,
         error: error instanceof Error ? error.message : 'Unknown error'
       });
@@ -343,11 +345,12 @@ export async function fileValidationMiddleware(
         );
         
         if (!validation.isValid) {
-          logger.warn('File validation failed', {
-            filename: part.filename,
-            errors: validation.errors,
-            fileHash: validation.fileHash
-          });
+          logger.warn({
+          msg: 'File validation failed',
+          filename: part.filename,
+          errors: validation.errors,
+          fileHash: validation.fileHash
+        });
           
           return reply.status(400).send({
             error: 'File validation failed',
@@ -364,7 +367,8 @@ export async function fileValidationMiddleware(
         });
         
         // Log successful validation
-        logger.info('File validation successful', {
+        logger.info({
+          msg: 'File validation successful',
           filename: validation.sanitizedFilename,
           fileHash: validation.fileHash,
           fileSize: validation.fileSize,
@@ -377,7 +381,8 @@ export async function fileValidationMiddleware(
     (request as any).validatedFiles = validatedFiles;
     
   } catch (error) {
-    logger.error('File validation middleware error', {
+    logger.error({
+      msg: 'File validation middleware error',
       error: error instanceof Error ? error.message : 'Unknown error'
     });
     

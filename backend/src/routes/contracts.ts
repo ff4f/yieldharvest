@@ -6,9 +6,9 @@ import { logger } from '../utils/logger';
 // Request schemas
 const createEscrowSchema = z.object({
   invoiceId: z.string().min(1),
-  buyerAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/, 'Invalid Ethereum address'),
+  supplierAccountId: z.string().regex(/^0\.0\.\d+$/, 'Invalid Hedera account ID'),
   amount: z.string().regex(/^\d+(\.\d+)?$/, 'Invalid amount format'),
-  dueDateTimestamp: z.number().int().positive(),
+  nftSerialNumber: z.number().int().positive(),
 });
 
 const escrowIdSchema = z.object({
@@ -70,7 +70,7 @@ export async function contractRoutes(fastify: FastifyInstance) {
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      logger.error('Failed to get contract info', { error: errorMessage });
+      logger.error({ error: errorMessage }, 'Failed to get contract info');
       return reply.code(500).send({
         error: 'Failed to retrieve contract information',
         details: errorMessage,
@@ -113,14 +113,18 @@ export async function contractRoutes(fastify: FastifyInstance) {
       // Validate request body
       const validatedData = createEscrowSchema.parse(request.body);
       
-      logger.info('Creating escrow via smart contract', {
+      logger.info({
         invoiceId: validatedData.invoiceId,
-        buyerAddress: validatedData.buyerAddress,
+        supplierAccountId: validatedData.supplierAccountId,
         amount: validatedData.amount,
-      });
+        nftSerialNumber: validatedData.nftSerialNumber,
+      }, 'Creating escrow via smart contract');
       
       // Create escrow using contract service
-      const result = await contractService.createEscrow(validatedData);
+      const result = await contractService.createEscrow({
+        ...validatedData,
+        supplierAddress: validatedData.supplierAccountId, // Map to expected parameter
+      });
       
       // Get HashScan URL
       const hashScanUrl = contractService.getHashScanUrl(result.transactionHash);
@@ -131,16 +135,16 @@ export async function contractRoutes(fastify: FastifyInstance) {
           where: { invoiceId: validatedData.invoiceId },
           data: {
             contractId: result.escrowId,
-            contractTxHash: result.transactionHash,
-            status: 'ESCROWED',
+            transactionHash: result.transactionHash,
+            status: 'ACTIVE',
           },
         });
       } catch (dbError) {
         const dbErrorMessage = dbError instanceof Error ? dbError.message : 'Unknown database error';
-        logger.warn('Failed to update database with contract details', {
-          error: dbErrorMessage,
+        logger.warn({
+          error: dbError instanceof Error ? dbError.message : String(dbError),
           escrowId: result.escrowId,
-        });
+        }, 'Failed to update database with contract details');
       }
       
       return reply.send({
@@ -150,10 +154,10 @@ export async function contractRoutes(fastify: FastifyInstance) {
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      logger.error('Failed to create escrow', {
-        error: errorMessage,
+      logger.error({
+        error: error instanceof Error ? error.message : String(error),
         body: request.body,
-      });
+      }, 'Failed to create escrow');
       
       if (error instanceof Error && error.name === 'ZodError') {
         return reply.code(400).send({
@@ -200,7 +204,7 @@ export async function contractRoutes(fastify: FastifyInstance) {
     try {
       const { escrowId } = escrowIdSchema.parse(request.params);
       
-      logger.info('Releasing escrow', { escrowId });
+      logger.info({ escrowId }, 'Releasing escrow');
       
       const result = await contractService.releaseEscrow(escrowId);
       const hashScanUrl = contractService.getHashScanUrl(result.transactionHash);
@@ -210,16 +214,16 @@ export async function contractRoutes(fastify: FastifyInstance) {
         await fastify.prisma.funding.updateMany({
           where: { contractId: escrowId },
           data: {
-            status: 'COMPLETED',
-            releaseTxHash: result.transactionHash,
+            status: 'RELEASED',
+            releaseTransactionHash: result.transactionHash,
           },
         });
       } catch (dbError) {
         const dbErrorMessage = dbError instanceof Error ? dbError.message : 'Unknown database error';
-        logger.warn('Failed to update database after release', {
-          error: dbErrorMessage,
+        logger.warn({
+          error: dbError instanceof Error ? dbError.message : String(dbError),
           escrowId,
-        });
+        }, 'Failed to update database after release');
       }
       
       return reply.send({
@@ -229,10 +233,10 @@ export async function contractRoutes(fastify: FastifyInstance) {
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      logger.error('Failed to release escrow', {
-        error: errorMessage,
+      logger.error({
+        error: error instanceof Error ? error.message : String(error),
         escrowId: request.params.escrowId,
-      });
+      }, 'Failed to release escrow');
       
       return reply.code(500).send({
         error: 'Failed to release escrow',
@@ -241,77 +245,7 @@ export async function contractRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // Refund escrow
-  fastify.post('/escrow/:escrowId/refund', {
-    schema: {
-      tags: ['contracts'],
-      summary: 'Refund escrow',
-      description: 'Refund escrow funds to buyer',
-      params: {
-        type: 'object',
-        required: ['escrowId'],
-        properties: {
-          escrowId: { type: 'string', description: 'Escrow ID' },
-        },
-      },
-      response: {
-        200: {
-          type: 'object',
-          properties: {
-            escrowId: { type: 'string' },
-            transactionHash: { type: 'string' },
-            blockNumber: { type: 'number' },
-            gasUsed: { type: 'string' },
-            status: { type: 'string' },
-            hashScanUrl: { type: 'string' },
-          },
-        },
-      },
-    },
-  }, async (request: EscrowIdRequest, reply: FastifyReply) => {
-    try {
-      const { escrowId } = escrowIdSchema.parse(request.params);
-      
-      logger.info('Refunding escrow', { escrowId });
-      
-      const result = await contractService.refundEscrow(escrowId);
-      const hashScanUrl = contractService.getHashScanUrl(result.transactionHash);
-      
-      // Update database
-      try {
-        await fastify.prisma.funding.updateMany({
-          where: { contractId: escrowId },
-          data: {
-            status: 'REFUNDED',
-            refundTxHash: result.transactionHash,
-          },
-        });
-      } catch (dbError) {
-        const dbErrorMessage = dbError instanceof Error ? dbError.message : 'Unknown database error';
-        logger.warn('Failed to update database after refund', {
-          error: dbErrorMessage,
-          escrowId,
-        });
-      }
-      
-      return reply.send({
-        ...result,
-        hashScanUrl,
-      });
-      
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      logger.error('Failed to refund escrow', {
-        error: errorMessage,
-        escrowId: request.params.escrowId,
-      });
-      
-      return reply.code(500).send({
-        error: 'Failed to refund escrow',
-        details: errorMessage,
-      });
-    }
-  });
+  // Note: Refund functionality removed as it's not supported by the current escrow contract
 
   // Get escrow details
   fastify.get('/escrow/:escrowId', {
@@ -357,27 +291,28 @@ export async function contractRoutes(fastify: FastifyInstance) {
       }
       
       // Format response
-      const statusMap = ['Active', 'Released', 'Refunded'];
+      const statusMap = ['Active', 'Released'];
       
       return reply.send({
         id: escrow.id.toString(),
         invoiceId: escrow.invoiceId,
-        seller: escrow.seller,
-        buyer: escrow.buyer,
+        investor: escrow.investor,
+        supplier: escrow.supplier,
         amount: escrow.amount.toString(),
-        dueDate: escrow.dueDate.toString(),
+        nftSerialNumber: escrow.nftSerialNumber.toString(),
         status: escrow.status,
         createdAt: escrow.createdAt.toString(),
+        releasedAt: escrow.releasedAt.toString(),
         amountFormatted: `${parseFloat(escrow.amount.toString()) / 1e18} HBAR`,
         statusText: statusMap[escrow.status] || 'Unknown',
       });
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      logger.error('Failed to get escrow details', {
-        error: errorMessage,
+      logger.error({
+        error: error instanceof Error ? error.message : String(error),
         escrowId: request.params.escrowId,
-      });
+      }, 'Failed to get escrow details');
       
       return reply.code(500).send({
         error: 'Failed to retrieve escrow details',
@@ -404,11 +339,26 @@ export async function contractRoutes(fastify: FastifyInstance) {
           type: 'object',
           properties: {
             invoiceId: { type: 'string' },
-            escrowIds: {
-              type: 'array',
-              items: { type: 'string' },
+            escrow: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                investor: { type: 'string' },
+                supplier: { type: 'string' },
+                amount: { type: 'string' },
+                nftSerialNumber: { type: 'string' },
+                status: { type: 'number' },
+                createdAt: { type: 'string' },
+                releasedAt: { type: 'string' },
+              },
             },
-            count: { type: 'number' },
+          },
+        },
+        404: {
+          type: 'object',
+          properties: {
+            error: { type: 'string' },
+            invoiceId: { type: 'string' },
           },
         },
       },
@@ -417,20 +367,35 @@ export async function contractRoutes(fastify: FastifyInstance) {
     try {
       const { invoiceId } = invoiceIdSchema.parse(request.params);
       
-      const escrowIds = await contractService.getEscrowsByInvoice(invoiceId);
+      const escrow = await contractService.getEscrowByInvoice(invoiceId);
+      
+      if (!escrow) {
+        return reply.code(404).send({
+          error: 'Escrow not found for invoice',
+          invoiceId,
+        });
+      }
       
       return reply.send({
         invoiceId,
-        escrowIds,
-        count: escrowIds.length,
+        escrow: {
+          id: escrow.id.toString(),
+          investor: escrow.investor,
+          supplier: escrow.supplier,
+          amount: escrow.amount.toString(),
+          nftSerialNumber: escrow.nftSerialNumber.toString(),
+          status: escrow.status,
+          createdAt: escrow.createdAt.toString(),
+          releasedAt: escrow.releasedAt.toString(),
+        },
       });
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      logger.error('Failed to get escrows by invoice', {
-        error: errorMessage,
+      logger.error({
+        error: error instanceof Error ? error.message : String(error),
         invoiceId: request.params.invoiceId,
-      });
+      }, 'Failed to get escrows by invoice');
       
       return reply.code(500).send({
         error: 'Failed to retrieve escrows for invoice',

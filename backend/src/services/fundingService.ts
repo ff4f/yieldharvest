@@ -19,7 +19,8 @@ export const CreateFundingSchema = z.object({
   invoiceId: z.string().min(1),
   investorId: z.string().min(1),
   amount: z.string().transform(val => parseFloat(val)),
-  buyerAddress: z.string().min(1), // Hedera account ID of the buyer
+  supplierAccountId: z.string().min(1), // Hedera account ID of the supplier
+  nftSerialNumber: z.number().int().positive().optional().default(1), // NFT serial number
 });
 
 export type CreateFundingData = z.infer<typeof CreateFundingSchema>;
@@ -29,9 +30,217 @@ export interface FundingResult {
   escrowId: string;
   transactionHash: string;
   hcsMessageId?: string | undefined;
+  proofLinks: {
+    transaction: string;
+    contract: string;
+    mirrorNode?: string;
+  };
 }
 
+export interface WalletFundingData {
+  invoiceId: string;
+  investorId: string;
+  amount: string;
+  supplierAccountId: string;
+  nftSerialNumber?: number;
+  walletAccountId: string; // The connected wallet account
+  signedTransactionBytes?: string; // For wallet-signed transactions
+}
+
+export const WalletFundingSchema = z.object({
+  invoiceId: z.string().min(1),
+  investorId: z.string().min(1),
+  amount: z.string().transform(val => parseFloat(val)),
+  supplierAccountId: z.string().min(1),
+  nftSerialNumber: z.number().int().positive().optional().default(1),
+  walletAccountId: z.string().min(1),
+  signedTransactionBytes: z.string().optional(),
+});
+
+export type WalletFundingDataType = z.infer<typeof WalletFundingSchema>;
+
 export class FundingService {
+  /**
+   * Create funding using smart contract escrow with wallet integration
+   */
+  async createFundingWithWallet(data: WalletFundingDataType): Promise<FundingResult> {
+    try {
+      logger.info('Creating funding with wallet integration', data);
+      
+      // Get invoice details
+      const invoice = await invoiceService.getInvoiceById(data.invoiceId);
+      if (!invoice) {
+        throw new Error('Invoice not found');
+      }
+      
+      if (invoice.status !== InvoiceStatus.ISSUED) {
+        throw new Error('Invoice must be in ISSUED status to be funded');
+      }
+      
+      // Validate funding amount
+      if (data.amount <= 0 || data.amount > invoice.amount) {
+        throw new Error('Invalid funding amount');
+      }
+      
+      // Check if invoice is already fully funded
+      const existingFundings = await prisma.funding.findMany({
+        where: { invoiceId: data.invoiceId }
+      });
+      
+      const totalFunded = existingFundings.reduce((sum: number, f: any) => sum + f.amount, 0);
+      if (totalFunded + data.amount > invoice.amount) {
+        throw new Error('Funding amount exceeds invoice amount');
+      }
+      
+      let escrowResult;
+      
+      if (data.signedTransactionBytes) {
+        // Submit pre-signed transaction from wallet
+        escrowResult = await hederaService.submitSignedTransaction(data.signedTransactionBytes);
+      } else {
+        // Create escrow on smart contract (fallback to service account)
+        escrowResult = await contractService.createEscrow({
+          invoiceId: data.invoiceId,
+          supplierAddress: data.supplierAccountId,
+          amount: data.amount.toString(),
+          nftSerialNumber: data.nftSerialNumber || 1,
+        });
+      }
+      
+      // Create funding record in database
+      const funding = await prisma.funding.create({
+        data: {
+          invoiceId: data.invoiceId,
+          investorId: data.investorId,
+          amount: data.amount,
+          escrowId: escrowResult.escrowId || escrowResult.transactionId,
+          transactionHash: escrowResult.transactionHash || escrowResult.transactionId,
+          status: 'ACTIVE',
+          walletAccountId: data.walletAccountId,
+        },
+        include: {
+          invoice: true,
+          investor: {
+            select: { id: true, name: true, email: true, accountId: true }
+          }
+        }
+      });
+      
+      // Update invoice status if fully funded
+      const newTotalFunded = totalFunded + data.amount;
+      if (newTotalFunded >= invoice.amount) {
+        await invoiceService.updateInvoiceStatus(
+          data.invoiceId,
+          InvoiceStatus.FUNDED,
+          `Invoice fully funded via escrow. Escrow ID: ${escrowResult.escrowId || escrowResult.transactionId}`,
+          undefined,
+          escrowResult.transactionHash || escrowResult.transactionId
+        );
+      }
+      
+      // Log funding event to HCS if topic exists
+      let hcsMessageId: string | undefined;
+      if (invoice.topicId) {
+        try {
+          const hcsResult = await hederaService.submitTopicMessage(
+            invoice.topicId,
+            {
+              eventType: 'FUNDING_CREATED',
+              invoiceId: data.invoiceId,
+              escrowId: escrowResult.escrowId || escrowResult.transactionId,
+              amount: data.amount,
+              investorId: data.investorId,
+              walletAccountId: data.walletAccountId,
+              transactionHash: escrowResult.transactionHash || escrowResult.transactionId,
+              timestamp: new Date().toISOString(),
+            }
+          );
+          hcsMessageId = hcsResult.sequenceNumber;
+        } catch (error) {
+          logger.warn('Failed to log funding to HCS', { error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+      
+      // Add invoice event
+      await invoiceService.addInvoiceEvent(
+        data.invoiceId,
+        InvoiceEventType.FUNDING_REQUESTED,
+        `Funding created via wallet. Amount: ${data.amount} HBAR, Escrow ID: ${escrowResult.escrowId || escrowResult.transactionId}`,
+        {
+          escrowId: escrowResult.escrowId || escrowResult.transactionId,
+          amount: data.amount,
+          investorId: data.investorId,
+          supplierAccountId: data.supplierAccountId,
+          nftSerialNumber: data.nftSerialNumber || 1,
+          walletAccountId: data.walletAccountId,
+        },
+        hcsMessageId,
+        new Date(),
+        escrowResult.transactionHash || escrowResult.transactionId
+      );
+      
+      const transactionHash = escrowResult.transactionHash || escrowResult.transactionId;
+      
+      logger.info('Funding created successfully with wallet', {
+        fundingId: funding.id,
+        escrowId: escrowResult.escrowId || escrowResult.transactionId,
+        transactionHash,
+      });
+      
+      return {
+        funding,
+        escrowId: escrowResult.escrowId || escrowResult.transactionId,
+        transactionHash,
+        hcsMessageId,
+        proofLinks: {
+          transaction: `https://hashscan.io/testnet/transaction/${transactionHash}`,
+          contract: `https://hashscan.io/testnet/contract/${config.hedera.escrowContractAddress}`,
+          mirrorNode: `https://testnet.mirrornode.hedera.com/api/v1/transactions/${transactionHash}`,
+        },
+      };
+    } catch (error) {
+      logger.error('Failed to create funding with wallet', { error: error instanceof Error ? error.message : String(error), data });
+      throw error;
+    }
+  }
+
+  /**
+   * Prepare funding transaction for wallet signing
+   */
+  async prepareFundingTransaction(data: WalletFundingDataType): Promise<{
+    transactionBytes: string;
+    transactionId: string;
+    description: string;
+  }> {
+    try {
+      logger.info('Preparing funding transaction for wallet signing', data);
+      
+      // Get invoice details
+      const invoice = await invoiceService.getInvoiceById(data.invoiceId);
+      if (!invoice) {
+        throw new Error('Invoice not found');
+      }
+      
+      // Prepare the escrow deposit transaction
+      const preparedTx = await contractService.prepareEscrowTransaction({
+        invoiceId: data.invoiceId,
+        supplierAddress: data.supplierAccountId,
+        amount: data.amount.toString(),
+        nftSerialNumber: data.nftSerialNumber || 1,
+        payerAccountId: data.walletAccountId,
+      });
+      
+      return {
+        transactionBytes: preparedTx.transactionBytes,
+        transactionId: preparedTx.transactionId,
+        description: `Fund invoice ${invoice.invoiceNumber} with ${data.amount} HBAR`,
+      };
+    } catch (error) {
+      logger.error('Failed to prepare funding transaction', { error: error instanceof Error ? error.message : String(error), data });
+      throw error;
+    }
+  }
+
   /**
    * Create funding using smart contract escrow
    */
@@ -65,12 +274,11 @@ export class FundingService {
       }
       
       // Create escrow on smart contract
-      const dueDateTimestamp = Math.floor(invoice.dueDate.getTime() / 1000);
       const escrowResult = await contractService.createEscrow({
         invoiceId: data.invoiceId,
-        buyerAddress: data.buyerAddress,
+        supplierAddress: data.supplierAccountId,
         amount: data.amount.toString(),
-        dueDateTimestamp,
+        nftSerialNumber: data.nftSerialNumber,
       });
       
       // Create funding record in database
@@ -86,7 +294,7 @@ export class FundingService {
         include: {
           invoice: true,
           investor: {
-            select: { id: true, name: true, email: true, hederaAccountId: true }
+            select: { id: true, name: true, email: true, accountId: true }
           }
         }
       });
@@ -134,7 +342,8 @@ export class FundingService {
           escrowId: escrowResult.escrowId,
           amount: data.amount,
           investorId: data.investorId,
-          buyerAddress: data.buyerAddress,
+          supplierAccountId: data.supplierAccountId,
+          nftSerialNumber: data.nftSerialNumber,
         },
         hcsMessageId,
         new Date(),
@@ -178,7 +387,7 @@ export class FundingService {
       }
       
       // Release escrow on smart contract
-      const result = await contractService.releaseEscrow(funding.escrowId!);
+      const result = await contractService.releaseEscrow(funding.invoiceId);
       
       // Update funding status
       await prisma.funding.update({
@@ -237,81 +446,9 @@ export class FundingService {
   }
   
   /**
-   * Refund escrow (if invoice is overdue or cancelled)
+   * Note: Refund functionality is not available in the current contract implementation.
+   * The EscrowPool contract only supports deposit and release operations.
    */
-  async refundEscrow(fundingId: string): Promise<{ transactionHash: string }> {
-    try {
-      const funding = await prisma.funding.findUnique({
-        where: { id: fundingId },
-        include: { invoice: true }
-      });
-      
-      if (!funding) {
-        throw new Error('Funding not found');
-      }
-      
-      if (funding.status !== 'ACTIVE') {
-        throw new Error('Escrow is not active');
-      }
-      
-      // Refund escrow on smart contract
-      const result = await contractService.refundEscrow(funding.escrowId!);
-      
-      // Update funding status
-      await prisma.funding.update({
-        where: { id: fundingId },
-        data: {
-          status: 'REFUNDED',
-          refundedAt: new Date(),
-          refundTransactionHash: result.transactionHash,
-        }
-      });
-      
-      // Log to HCS if topic exists
-      if (funding.invoice.topicId) {
-        try {
-          await hederaService.submitTopicMessage(
-            funding.invoice.topicId,
-            {
-              eventType: 'ESCROW_REFUNDED',
-              invoiceId: funding.invoiceId,
-              escrowId: funding.escrowId,
-              amount: funding.amount,
-              transactionHash: result.transactionHash,
-              timestamp: new Date().toISOString(),
-            }
-          );
-        } catch (error) {
-          logger.warn('Failed to log escrow refund to HCS', { error: error instanceof Error ? error.message : String(error) });
-        }
-      }
-      
-      // Add invoice event
-      await invoiceService.addInvoiceEvent(
-        funding.invoiceId,
-        InvoiceEventType.CANCELLED,
-        `Escrow refunded. Amount: ${funding.amount} HBAR`,
-        {
-          escrowId: funding.escrowId,
-          amount: funding.amount,
-        },
-        undefined,
-        new Date(),
-        result.transactionHash
-      );
-      
-      logger.info('Escrow refunded successfully', {
-        fundingId,
-        escrowId: funding.escrowId,
-        transactionHash: result.transactionHash,
-      });
-      
-      return { transactionHash: result.transactionHash };
-    } catch (error) {
-      logger.error('Failed to refund escrow', { error: error instanceof Error ? error.message : String(error), fundingId });
-      throw error;
-    }
-  }
   
   /**
    * Get funding by ID with escrow details
@@ -322,7 +459,7 @@ export class FundingService {
       include: {
         invoice: true,
         investor: {
-          select: { id: true, name: true, email: true, hederaAccountId: true }
+          select: { id: true, name: true, email: true, accountId: true }
         }
       }
     });
@@ -352,7 +489,7 @@ export class FundingService {
       where: { invoiceId },
       include: {
         investor: {
-          select: { id: true, name: true, email: true, hederaAccountId: true }
+          select: { id: true, name: true, email: true, accountId: true }
         }
       },
       orderBy: { createdAt: 'desc' }

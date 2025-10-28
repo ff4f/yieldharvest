@@ -4,38 +4,39 @@ import { logger } from '../utils/logger';
 import fs from 'fs';
 import path from 'path';
 
-// EscrowPool contract ABI (simplified for key functions)
+// EscrowPool contract ABI (based on actual deployed contract)
 const ESCROW_POOL_ABI = [
-  'function createEscrow(string memory invoiceId, address buyer, uint256 amount, uint256 dueDate) external payable returns (uint256)',
-  'function releaseEscrow(uint256 escrowId) external',
-  'function refundEscrow(uint256 escrowId) external',
-  'function getEscrow(uint256 escrowId) external view returns (tuple(uint256 id, string invoiceId, address seller, address buyer, uint256 amount, uint256 dueDate, uint8 status, uint256 createdAt))',
-  'function getEscrowsByInvoice(string memory invoiceId) external view returns (uint256[])',
+  'function deposit(string memory invoiceId, address supplier, uint256 nftSerialNumber) external payable',
+  'function release(string memory invoiceId) external',
+  'function invoiceToEscrowId(string memory invoiceId) external view returns (uint256)',
+  'function escrows(uint256 escrowId) external view returns (tuple(uint256 id, string invoiceId, address investor, address supplier, uint256 amount, uint256 nftSerialNumber, uint8 status, uint256 createdAt, uint256 releasedAt))',
   'function getBalance() external view returns (uint256)',
   'function owner() external view returns (address)',
   'function platformFeeRate() external view returns (uint256)',
   'function feeRecipient() external view returns (address)',
-  'event EscrowCreated(uint256 indexed escrowId, string indexed invoiceId, address indexed seller, address buyer, uint256 amount)',
-  'event EscrowReleased(uint256 indexed escrowId, string indexed invoiceId, address indexed seller, uint256 amount)',
-  'event EscrowRefunded(uint256 indexed escrowId, string indexed invoiceId, address indexed buyer, uint256 amount)',
+  'function MAX_FEE_RATE() external view returns (uint256)',
+  'event EscrowCreated(uint256 indexed escrowId, string indexed invoiceId, address indexed investor, address supplier, uint256 amount, uint256 nftSerialNumber)',
+  'event EscrowFunded(uint256 indexed escrowId, string indexed invoiceId, address indexed investor, uint256 amount)',
+  'event EscrowReleased(uint256 indexed escrowId, string indexed invoiceId, address indexed supplier, uint256 amount, uint256 platformFee)',
 ];
 
 export interface EscrowData {
   id: bigint;
   invoiceId: string;
-  seller: string;
-  buyer: string;
+  investor: string;
+  supplier: string;
   amount: bigint;
-  dueDate: bigint;
-  status: number; // 0: Active, 1: Released, 2: Refunded
+  nftSerialNumber: bigint;
+  status: number; // 0: Active, 1: Released
   createdAt: bigint;
+  releasedAt: bigint;
 }
 
 export interface CreateEscrowParams {
   invoiceId: string;
-  buyerAddress: string;
+  supplierAddress: string;
   amount: string; // in HBAR
-  dueDateTimestamp: number;
+  nftSerialNumber: number;
 }
 
 export interface EscrowTransaction {
@@ -46,16 +47,34 @@ export interface EscrowTransaction {
   status: 'pending' | 'confirmed' | 'failed';
 }
 
-class ContractService {
+export interface PreparedTransaction {
+  transactionBytes: string;
+  transactionId: string;
+  gasLimit?: string;
+  gasPrice?: string;
+}
+
+export interface EscrowTransactionData {
+  invoiceId: string;
+  supplierAddress: string;
+  amount: string;
+  nftSerialNumber: number;
+  payerAccountId?: string;
+}
+
+export class ContractService {
   private provider: ethers.JsonRpcProvider;
-  private contract: ethers.Contract;
+  private contract: any;
   private signer?: ethers.Wallet;
   private contractAddress: string;
 
   constructor() {
-    // Initialize provider
+    // Initialize provider with network configuration to avoid ENS issues
     const rpcUrl = config.hedera.jsonRpcUrl || 'https://testnet.hashio.io/api';
-    this.provider = new ethers.JsonRpcProvider(rpcUrl);
+    this.provider = new ethers.JsonRpcProvider(rpcUrl, {
+      chainId: 296, // Hedera testnet chain ID
+      name: 'hedera-testnet'
+    });
     
     // Get contract address from environment or deployment file
     this.contractAddress = this.getContractAddress();
@@ -113,7 +132,7 @@ class ContractService {
   }
 
   /**
-   * Create a new escrow for an invoice
+   * Create and fund a new escrow for an invoice using deposit function
    */
   async createEscrow(params: CreateEscrowParams): Promise<EscrowTransaction> {
     try {
@@ -121,29 +140,33 @@ class ContractService {
         throw new Error('No signer available. Private key required for transactions.');
       }
 
-      logger.info('Creating escrow', params);
+      logger.info('Creating and funding escrow', params);
       
       const amountWei = ethers.parseEther(params.amount);
       
-      // Call contract function
-      const tx = await this.contract.createEscrow(
+      // Call contract deposit function (creates and funds escrow in one step)
+      const tx = await this.contract.deposit(
         params.invoiceId,
-        params.buyerAddress,
-        amountWei,
-        params.dueDateTimestamp,
+        params.supplierAddress,
+        params.nftSerialNumber,
         {
           value: amountWei, // Send HBAR with the transaction
           gasLimit: 500000,
         }
       );
       
-      logger.info('Escrow creation transaction sent', {
+      logger.info('Escrow deposit transaction sent', {
         hash: tx.hash,
         invoiceId: params.invoiceId,
       });
       
       // Wait for transaction receipt
       const receipt = await tx.wait();
+      
+      // Check transaction status
+      if (receipt.status === 0) {
+        throw new Error('Transaction failed');
+      }
       
       // Parse events to get escrow ID
       const escrowCreatedEvent = receipt.logs.find(
@@ -163,7 +186,7 @@ class ContractService {
         escrowId = parsed?.args.escrowId.toString() || '0';
       }
       
-      logger.info('Escrow created successfully', {
+      logger.info('Escrow created and funded successfully', {
         escrowId,
         transactionHash: tx.hash,
         blockNumber: receipt.blockNumber,
@@ -188,30 +211,34 @@ class ContractService {
   }
 
   /**
-   * Release escrow funds to seller
+   * Release escrow funds to supplier by invoice ID
    */
-  async releaseEscrow(escrowId: string): Promise<EscrowTransaction> {
+  async releaseEscrow(invoiceId: string): Promise<EscrowTransaction> {
     try {
       if (!this.signer) {
         throw new Error('No signer available. Private key required for transactions.');
       }
 
-      logger.info('Releasing escrow', { escrowId });
+      logger.info('Releasing escrow', { invoiceId });
       
-      const tx = await this.contract.releaseEscrow(escrowId, {
+      // Get escrow ID first
+      const escrowId = await this.contract.invoiceToEscrowId(invoiceId);
+      
+      const tx = await this.contract.release(invoiceId, {
         gasLimit: 300000,
       });
       
       const receipt = await tx.wait();
       
       logger.info('Escrow released successfully', {
-        escrowId,
+        escrowId: escrowId.toString(),
+        invoiceId,
         transactionHash: tx.hash,
         blockNumber: receipt.blockNumber,
       });
       
       return {
-        escrowId,
+        escrowId: escrowId.toString(),
         transactionHash: tx.hash,
         blockNumber: receipt.blockNumber,
         gasUsed: receipt.gasUsed.toString(),
@@ -221,47 +248,7 @@ class ContractService {
     } catch (error) {
       logger.error('Failed to release escrow', {
         error: error instanceof Error ? error.message : String(error),
-        escrowId,
-      });
-      throw error;
-    }
-  }
-
-  /**
-   * Refund escrow funds to buyer
-   */
-  async refundEscrow(escrowId: string): Promise<EscrowTransaction> {
-    try {
-      if (!this.signer) {
-        throw new Error('No signer available. Private key required for transactions.');
-      }
-
-      logger.info('Refunding escrow', { escrowId });
-      
-      const tx = await this.contract.refundEscrow(escrowId, {
-        gasLimit: 300000,
-      });
-      
-      const receipt = await tx.wait();
-      
-      logger.info('Escrow refunded successfully', {
-        escrowId,
-        transactionHash: tx.hash,
-        blockNumber: receipt.blockNumber,
-      });
-      
-      return {
-        escrowId,
-        transactionHash: tx.hash,
-        blockNumber: receipt.blockNumber,
-        gasUsed: receipt.gasUsed.toString(),
-        status: 'confirmed',
-      };
-      
-    } catch (error) {
-      logger.error('Failed to refund escrow', {
-        error: error instanceof Error ? error.message : String(error),
-        escrowId,
+        invoiceId,
       });
       throw error;
     }
@@ -272,17 +259,18 @@ class ContractService {
    */
   async getEscrow(escrowId: string): Promise<EscrowData | null> {
     try {
-      const escrow = await this.contract.getEscrow(escrowId);
+      const escrow = await this.contract.escrows(escrowId);
       
       return {
         id: escrow.id,
         invoiceId: escrow.invoiceId,
-        seller: escrow.seller,
-        buyer: escrow.buyer,
+        investor: escrow.investor,
+        supplier: escrow.supplier,
         amount: escrow.amount,
-        dueDate: escrow.dueDate,
+        nftSerialNumber: escrow.nftSerialNumber,
         status: escrow.status,
         createdAt: escrow.createdAt,
+        releasedAt: escrow.releasedAt,
       };
     } catch (error) {
       logger.error('Failed to get escrow', {
@@ -294,20 +282,25 @@ class ContractService {
   }
 
   /**
-   * Get all escrow IDs for an invoice
+   * Get escrow details by invoice ID
    */
-  async getEscrowsByInvoice(invoiceId: string): Promise<string[]> {
+  async getEscrowByInvoice(invoiceId: string): Promise<EscrowData | null> {
     try {
-      const escrowIds = await this.contract.getEscrowsByInvoice(invoiceId);
-      return escrowIds.map((id: bigint) => id.toString());
+      const escrowId = await this.contract.invoiceToEscrowId(invoiceId);
+      if (escrowId.toString() === '0') {
+        return null;
+      }
+      return this.getEscrow(escrowId.toString());
     } catch (error) {
-      logger.error('Failed to get escrows by invoice', {
+      logger.error('Failed to get escrow by invoice', {
         error: error instanceof Error ? error.message : String(error),
         invoiceId,
       });
-      return [];
+      return null;
     }
   }
+
+
 
   /**
    * Get contract information
@@ -349,6 +342,74 @@ class ContractService {
   getContractHashScanUrl(): string {
     const network = config.hedera.network === 'mainnet' ? 'mainnet' : 'testnet';
     return `https://hashscan.io/${network}/contract/${this.contractAddress}`;
+  }
+
+  /**
+   * Prepare escrow transaction for wallet signing
+   */
+  async prepareEscrowTransaction(data: EscrowTransactionData): Promise<PreparedTransaction> {
+    try {
+      logger.info('Preparing escrow transaction for wallet signing', data);
+      
+      if (!this.contract) {
+        throw new Error('Contract not initialized');
+      }
+      
+      // Convert amount to wei (assuming HBAR to wei conversion)
+      const amountInWei = ethers.parseEther(data.amount);
+      
+      // Get current timestamp and add 30 days for due date
+      const dueDate = Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60);
+      
+      // Prepare the transaction data
+      const txData = this.contract.interface.encodeFunctionData('deposit', [
+        data.invoiceId,
+        data.supplierAddress,
+        dueDate,
+        data.nftSerialNumber
+      ]);
+      
+      // Create transaction object
+      const transaction = {
+        to: this.contractAddress,
+        data: txData,
+        value: amountInWei,
+        gasLimit: '300000', // Estimated gas limit
+      };
+      
+      // If payer account is specified, use it for transaction preparation
+      if (data.payerAccountId) {
+        // For Hedera, we need to prepare the transaction differently
+        // This is a simplified version - in production, you'd use Hedera SDK
+        const transactionId = `${data.payerAccountId}@${Math.floor(Date.now() / 1000)}.${Math.floor(Math.random() * 999999999)}`;
+        
+        return {
+          transactionBytes: JSON.stringify(transaction), // Simplified - should be actual transaction bytes
+          transactionId,
+          gasLimit: transaction.gasLimit,
+        };
+      }
+      
+      // Fallback to ethers transaction preparation
+      const populatedTx = await this.contract.deposit.populateTransaction(
+        data.invoiceId,
+        data.supplierAddress,
+        dueDate,
+        data.nftSerialNumber,
+        { value: amountInWei }
+      );
+      
+      const transactionId = `prepared_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
+      return {
+        transactionBytes: JSON.stringify(populatedTx),
+        transactionId,
+        gasLimit: populatedTx.gasLimit?.toString(),
+      };
+    } catch (error) {
+      logger.error('Failed to prepare escrow transaction', { error: error instanceof Error ? error.message : String(error), data });
+      throw error;
+    }
   }
 }
 

@@ -79,8 +79,8 @@ export class InvoiceService {
           fundings: {
             include: {
               investor: {
-                select: { id: true, name: true, email: true }
-              }
+              select: { id: true, name: true, email: true, accountId: true }
+            }
             }
           }
         },
@@ -89,8 +89,14 @@ export class InvoiceService {
       prisma.invoice.count()
     ]);
 
+    // Add Hedera proof links to each invoice
+    const invoicesWithProofLinks = invoices.map(invoice => ({
+      ...invoice,
+      proofLinks: this.generateProofLinks(invoice)
+    }));
+
     return {
-      invoices,
+      invoices: invoicesWithProofLinks,
       pagination: {
         page,
         limit,
@@ -100,18 +106,101 @@ export class InvoiceService {
     };
   }
 
+  private generateProofLinks(invoice: any) {
+    const proofLinks = [];
+    const baseHashScanUrl = 'https://hashscan.io/testnet';
+    const baseMirrorUrl = 'https://testnet.mirrornode.hedera.com/api/v1';
+
+    // HTS NFT proof link
+    if (invoice.nftTokenId && invoice.nftSerialNumber) {
+      proofLinks.push({
+        type: 'hts',
+        label: `NFT ${invoice.nftTokenId}/${invoice.nftSerialNumber}`,
+        url: `${baseHashScanUrl}/token/${invoice.nftTokenId}?nft=${invoice.nftSerialNumber}`,
+        hash: invoice.nftTokenId,
+        timestamp: invoice.createdAt
+      });
+      
+      // Mirror Node NFT link
+      proofLinks.push({
+        type: 'mirror',
+        label: 'Mirror Node NFT',
+        url: `${baseMirrorUrl}/tokens/${invoice.nftTokenId}/nfts/${invoice.nftSerialNumber}`,
+        hash: invoice.nftTokenId,
+        timestamp: invoice.createdAt
+      });
+    }
+
+    // HFS file proof link
+    if (invoice.fileId) {
+      proofLinks.push({
+        type: 'hfs',
+        label: `File ${invoice.fileId}`,
+        url: `${baseHashScanUrl}/file/${invoice.fileId}`,
+        hash: invoice.fileHash || invoice.fileId,
+        timestamp: invoice.createdAt
+      });
+      
+      // Mirror Node file link
+      proofLinks.push({
+        type: 'mirror',
+        label: 'Mirror Node File',
+        url: `${baseMirrorUrl}/files/${invoice.fileId}`,
+        hash: invoice.fileHash || invoice.fileId,
+        timestamp: invoice.createdAt
+      });
+    }
+
+    // HCS topic proof link
+    if (invoice.topicId) {
+      proofLinks.push({
+        type: 'hcs',
+        label: `Topic ${invoice.topicId}`,
+        url: `${baseHashScanUrl}/topic/${invoice.topicId}`,
+        hash: invoice.topicId,
+        timestamp: invoice.createdAt
+      });
+      
+      // Mirror Node topic messages link
+      proofLinks.push({
+        type: 'mirror',
+        label: 'Mirror Node Messages',
+        url: `${baseMirrorUrl}/topics/${invoice.topicId}/messages`,
+        hash: invoice.topicId,
+        timestamp: invoice.createdAt
+      });
+    }
+
+    // Add HashScan transaction links from events
+    if (invoice.events && invoice.events.length > 0) {
+      invoice.events.forEach((event: any) => {
+        if (event.transactionId) {
+          proofLinks.push({
+            type: 'hashscan',
+            label: `${event.eventType} Transaction`,
+            url: `${baseHashScanUrl}/transaction/${event.transactionId}`,
+            hash: event.transactionId,
+            timestamp: event.createdAt
+          });
+        }
+      });
+    }
+
+    return proofLinks;
+  }
+
   /**
    * Get invoice by ID
    */
   async getInvoiceById(id: string) {
-    return prisma.invoice.findUnique({
+    const invoice = await prisma.invoice.findUnique({
       where: { id },
       include: {
         supplier: {
-          select: { id: true, name: true, email: true, hederaAccountId: true }
+          select: { id: true, name: true, email: true, accountId: true }
         },
         agent: {
-          select: { id: true, name: true, email: true, hederaAccountId: true }
+          select: { id: true, name: true, email: true, accountId: true }
         },
         events: {
           orderBy: { createdAt: 'desc' }
@@ -119,12 +208,22 @@ export class InvoiceService {
         fundings: {
           include: {
             investor: {
-              select: { id: true, name: true, email: true, hederaAccountId: true }
+              select: { id: true, name: true, email: true, accountId: true }
             }
           }
         }
       }
     });
+
+    if (!invoice) {
+      return null;
+    }
+
+    // Add Hedera proof links
+    return {
+      ...invoice,
+      proofLinks: this.generateProofLinks(invoice)
+    };
   }
 
   /**
@@ -206,7 +305,7 @@ export class InvoiceService {
         invoiceId,
         eventType,
         description,
-        metadata,
+        metadata: metadata ? JSON.stringify(metadata) : null,
         hcsMessageId,
         hcsTimestamp,
         transactionId

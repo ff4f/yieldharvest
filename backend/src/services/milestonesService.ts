@@ -72,8 +72,8 @@ export class MilestonesService {
 
   constructor() {
     this.hcsService = new HcsService({
-      operatorId: process.env.HEDERA_ACCOUNT_ID!,
-      operatorKey: process.env.HEDERA_PRIVATE_KEY!,
+      operatorId: process.env.OPERATOR_ID!,
+        operatorKey: process.env.OPERATOR_KEY!,
       network: (process.env.HEDERA_NETWORK as 'testnet' | 'mainnet' | 'previewnet') || 'testnet',
       mirrorNodeUrl: process.env.MIRROR_NODE_URL || 'https://testnet.mirrornode.hedera.com'
     });
@@ -93,15 +93,21 @@ export class MilestonesService {
       const invoiceKey = `${data.tokenId}-${data.serial}`;
       const topicId = await hcsTopicsService.getOrCreateDealTopic(invoiceKey);
 
-      // Prepare milestone message
+      // Prepare normalized milestone message payload as per H.MD requirements
+      const normalizedPayload = {
+        tokenId: data.tokenId,
+        serial: data.serial,
+        milestone: data.milestone,
+        ts: new Date().toISOString(),
+        fileHash: data.fileHash || null
+      };
+
+      // Extended milestone message with additional context
       const milestoneMessage = {
         type: 'MILESTONE_EVENT',
-        timestamp: new Date().toISOString(),
-        data: {
-          tokenId: data.tokenId,
-          serial: data.serial,
-          milestone: data.milestone,
-          fileHash: data.fileHash,
+        version: '1.0',
+        payload: normalizedPayload,
+        context: {
           agentId: data.agentId,
           location: data.location,
           notes: data.notes,
@@ -387,6 +393,18 @@ export class MilestonesService {
     } catch (error) {
       logger.error('Milestones service health check failed', { error });
       return false;
+    }
+  }
+
+  /**
+   * Close the milestones service and cleanup resources
+   */
+  async close(): Promise<void> {
+    try {
+      await this.hcsService.close();
+      logger.info('Milestones service closed');
+    } catch (error) {
+      logger.error('Error closing milestones service', { error });
     }
   }
 }

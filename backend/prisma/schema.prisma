@@ -13,10 +13,13 @@ datasource db {
 // User model for suppliers, investors, and agents
 model User {
   id          String   @id @default(cuid())
-  email       String   @unique
-  name        String
-  role        String   // UserRole: SUPPLIER, INVESTOR, AGENT, ADMIN
-  hederaAccountId String? // Hedera account ID for wallet integration
+  email       String?  @unique // Made optional for wallet-only users
+  name        String?  // Made optional for wallet-only users
+  accountId   String   @unique // Hedera account ID (primary identifier)
+  roles       String   // JSON array of roles: ["SUPPLIER", "INVESTOR", "AGENT", "ADMIN"]
+  publicKey   String?  // Cached public key for signature verification
+  isActive    Boolean  @default(true)
+  lastLoginAt DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -24,8 +27,25 @@ model User {
   supplierInvoices Invoice[] @relation("SupplierInvoices")
   investorFundings Funding[] @relation("InvestorFundings")
   agentInvoices    Invoice[] @relation("AgentInvoices")
+  supplierDocuments Document[] @relation("SupplierDocuments")
+  nonces          Nonce[]
 
   @@map("users")
+}
+
+// Nonce model for authentication challenges
+model Nonce {
+  id        String   @id @default(cuid())
+  accountId String   // Hedera account ID
+  nonce     String   @unique // Random nonce string
+  expiresAt DateTime // TTL for nonce (5 minutes)
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  // Relations
+  user      User     @relation(fields: [accountId], references: [accountId], onDelete: Cascade)
+
+  @@map("nonces")
 }
 
 // UserRole enum replaced with String for SQLite compatibility
@@ -60,6 +80,7 @@ model Invoice {
   agent           User?         @relation("AgentInvoices", fields: [agentId], references: [id])
   events          InvoiceEvent[]
   fundings        Funding[]
+  documents       Document[]
 
   @@map("invoices")
 }
@@ -185,6 +206,35 @@ model Milestone {
 
   @@unique([tokenId, serial, milestone])
   @@map("milestones")
+}
+
+// Document model - tracks files uploaded to Hedera File Service (HFS)
+model Document {
+  id              String   @id @default(cuid())
+  invoiceId       String
+  supplierId      String
+  documentType    String   // DocumentType: invoice, contract, receipt
+  filename        String
+  
+  // HFS-specific fields
+  fileId          String   @unique // HFS File ID
+  hash            String   // SHA-256 hash of file content
+  size            Int      // File size in bytes
+  mimeType        String?  // MIME type of the file
+  
+  // Hedera transaction tracking
+  transactionId   String?  // File creation transaction ID
+  hashScanUrl     String?  // HashScan explorer URL
+  mirrorNodeUrl   String?  // Mirror Node API URL
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  invoice         Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  supplier        User     @relation("SupplierDocuments", fields: [supplierId], references: [id])
+
+  @@map("documents")
 }
 
 // System configuration for Hedera network settings

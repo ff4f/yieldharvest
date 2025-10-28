@@ -23,12 +23,6 @@ describe('ContractService', () => {
       waitForTransaction: jest.fn(),
     } as any;
 
-    // Set up default mock return values for contract methods
-    mockContract.owner = jest.fn().mockResolvedValue('0x1234567890123456789012345678901234567890');
-    mockContract.platformFeeRate = jest.fn().mockResolvedValue(250);
-    mockContract.feeRecipient = jest.fn().mockResolvedValue('0x1234567890123456789012345678901234567890');
-    mockContract.getBalance = jest.fn().mockResolvedValue(ethers.parseEther('100'));
-
     // Mock signer
     mockSigner = {
       address: '0xc2A10DCB44F8dB19199FD8D88c9aEF7367F012DC',
@@ -37,66 +31,84 @@ describe('ContractService', () => {
 
     // Mock contract
     mockContract = {
-      createEscrow: jest.fn(),
-      releaseEscrow: jest.fn(),
-      refundEscrow: jest.fn(),
-      getEscrow: jest.fn(),
-      getEscrowsByInvoice: jest.fn(),
-      getBalance: jest.fn(),
-      owner: jest.fn(),
-      platformFeeRate: jest.fn(),
-      feeRecipient: jest.fn(),
+      deposit: jest.fn(),
+      release: jest.fn(),
+      invoiceToEscrowId: jest.fn(),
+      escrows: jest.fn(),
+      getBalance: jest.fn().mockResolvedValue(ethers.parseEther('100')),
+      owner: jest.fn().mockResolvedValue('0x1234567890123456789012345678901234567890'),
+      platformFeeRate: jest.fn().mockResolvedValue(250),
+      feeRecipient: jest.fn().mockResolvedValue('0x1234567890123456789012345678901234567890'),
       target: '0x75e3c67F65a1a7671a4438F2d6ec7d755Ab5D36A',
+      interface: {
+        parseLog: jest.fn() as jest.MockedFunction<any>,
+      },
     } as any;
 
     // Mock ethers constructors
-    mockEthers.JsonRpcProvider = jest.fn().mockReturnValue(mockProvider);
-    mockEthers.Wallet = jest.fn().mockReturnValue(mockSigner);
-    mockEthers.Contract = jest.fn().mockReturnValue(mockContract);
+    mockEthers.Contract = jest.fn().mockImplementation(() => {
+      // Return a contract that has a connect method
+      const contract = { ...mockContract };
+      contract.connect = jest.fn().mockReturnValue(mockContract);
+      return contract;
+    });
+    mockEthers.JsonRpcProvider = jest.fn().mockImplementation(() => mockProvider);
+    mockEthers.Wallet = jest.fn().mockImplementation(() => mockSigner) as any;
     mockEthers.parseEther = jest.fn().mockImplementation((value) => BigInt(value) * BigInt(10 ** 18));
     mockEthers.formatEther = jest.fn().mockImplementation((value) => (Number(value) / 10 ** 18).toString());
+
+    // Directly set the contract property and other properties
+    (contractService as any).contract = mockContract;
+    (contractService as any).contractAddress = '0x75e3c67F65a1a7671a4438F2d6ec7d755Ab5D36A';
+    (contractService as any).provider = mockProvider;
   });
 
   describe('createEscrow', () => {
     it('should create escrow successfully', async () => {
+      const mockLog = {
+        topics: ['0x...', '0x...'],
+        data: '0x...',
+      };
+      
       const mockTxResponse = {
         hash: '0xabc123def456',
         wait: jest.fn().mockResolvedValue({
           status: 1,
           blockNumber: 12345,
           gasUsed: BigInt(150000),
-          logs: [{
-            topics: ['0x...', '0x...'],
-            data: '0x...',
-          }],
+          logs: [mockLog],
         }),
       };
 
-      mockContract.createEscrow.mockResolvedValue(mockTxResponse);
+      // Mock parseLog to return EscrowCreated event (called twice)
+      const mockParsedEvent = { name: 'EscrowCreated', args: { escrowId: BigInt(1) } };
+      (mockContract.interface.parseLog as jest.MockedFunction<any>)
+        .mockReturnValue(mockParsedEvent);
+
+      mockContract.deposit.mockResolvedValue(mockTxResponse);
 
       const params: CreateEscrowParams = {
         invoiceId: 'test-invoice-123',
-        buyerAddress: '0x742d35Cc6634C0532925a3b8D4C9db96DfbB8b2f',
+        supplierAddress: '0.0.12345',
         amount: '100',
-        dueDateTimestamp: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60, // 30 days
+        nftSerialNumber: 1,
       };
 
       const result = await contractService.createEscrow(params);
 
       expect(result).toEqual({
-        escrowId: expect.any(String),
+        escrowId: '1',
         transactionHash: '0xabc123def456',
         blockNumber: 12345,
         gasUsed: '150000',
         status: 'confirmed',
       });
 
-      expect(mockContract.createEscrow).toHaveBeenCalledWith(
+      expect(mockContract.deposit).toHaveBeenCalledWith(
         'test-invoice-123',
-        '0x742d35Cc6634C0532925a3b8D4C9db96DfbB8b2f',
-        mockEthers.parseEther('100'),
-        params.dueDateTimestamp,
-        { value: mockEthers.parseEther('100') }
+        '0.0.12345',
+        1,
+        { value: mockEthers.parseEther('100'), gasLimit: 500000 }
       );
     });
 
@@ -110,26 +122,26 @@ describe('ContractService', () => {
         }),
       };
 
-      mockContract.createEscrow.mockResolvedValue(mockTxResponse);
+      mockContract.deposit.mockResolvedValue(mockTxResponse);
 
       const params: CreateEscrowParams = {
         invoiceId: 'test-invoice-456',
-        buyerAddress: '0x742d35Cc6634C0532925a3b8D4C9db96DfbB8b2f',
+        supplierAddress: '0.0.12345',
         amount: '50',
-        dueDateTimestamp: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
+        nftSerialNumber: 1,
       };
 
       await expect(contractService.createEscrow(params)).rejects.toThrow('Transaction failed');
     });
 
     it('should handle contract revert', async () => {
-      mockContract.createEscrow.mockRejectedValue(new Error('execution reverted: Insufficient funds'));
+      mockContract.deposit.mockRejectedValue(new Error('execution reverted: Insufficient funds'));
 
       const params: CreateEscrowParams = {
         invoiceId: 'test-invoice-789',
-        buyerAddress: '0x742d35Cc6634C0532925a3b8D4C9db96DfbB8b2f',
+        supplierAddress: '0.0.12345',
         amount: '1000000', // Very large amount
-        dueDateTimestamp: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
+        nftSerialNumber: 1,
       };
 
       await expect(contractService.createEscrow(params)).rejects.toThrow('execution reverted: Insufficient funds');
@@ -147,9 +159,10 @@ describe('ContractService', () => {
         }),
       };
 
-      mockContract.releaseEscrow.mockResolvedValue(mockTxResponse);
+      mockContract.invoiceToEscrowId.mockResolvedValue(BigInt(1));
+      mockContract.release.mockResolvedValue(mockTxResponse);
 
-      const result = await contractService.releaseEscrow('1');
+      const result = await contractService.releaseEscrow('test-invoice-123');
 
       expect(result).toEqual({
         escrowId: '1',
@@ -159,20 +172,21 @@ describe('ContractService', () => {
         status: 'confirmed',
       });
 
-      expect(mockContract.releaseEscrow).toHaveBeenCalledWith(1);
+      expect(mockContract.release).toHaveBeenCalledWith('test-invoice-123', { gasLimit: 300000 });
     });
 
     it('should handle unauthorized release', async () => {
-      mockContract.releaseEscrow.mockRejectedValue(new Error('execution reverted: Not authorized'));
+      mockContract.invoiceToEscrowId.mockResolvedValue(BigInt(1));
+      mockContract.release.mockRejectedValue(new Error('execution reverted: Not authorized'));
 
       await expect(contractService.releaseEscrow('1')).rejects.toThrow('execution reverted: Not authorized');
     });
   });
 
-  describe('refundEscrow', () => {
-    it('should refund escrow successfully', async () => {
+  describe('releaseEscrow', () => {
+    it('should release escrow successfully', async () => {
       const mockTxResponse = {
-        hash: '0xrefund123',
+        hash: '0xrelease123',
         wait: jest.fn().mockResolvedValue({
           status: 1,
           blockNumber: 12348,
@@ -180,25 +194,26 @@ describe('ContractService', () => {
         }),
       };
 
-      mockContract.refundEscrow.mockResolvedValue(mockTxResponse);
+      mockContract.invoiceToEscrowId.mockResolvedValue(BigInt(1));
+      mockContract.release.mockResolvedValue(mockTxResponse);
 
-      const result = await contractService.refundEscrow('2');
+      const result = await contractService.releaseEscrow('test-invoice-123');
 
       expect(result).toEqual({
-        escrowId: '2',
-        transactionHash: '0xrefund123',
+        escrowId: '1',
+        transactionHash: '0xrelease123',
         blockNumber: 12348,
         gasUsed: '75000',
         status: 'confirmed',
       });
 
-      expect(mockContract.refundEscrow).toHaveBeenCalledWith(2);
+      expect(mockContract.release).toHaveBeenCalledWith('test-invoice-123', { gasLimit: 300000 });
     });
 
-    it('should handle escrow not eligible for refund', async () => {
-      mockContract.refundEscrow.mockRejectedValue(new Error('execution reverted: Escrow not refundable'));
+    it('should handle escrow not eligible for release', async () => {
+      mockContract.release.mockRejectedValue(new Error('execution reverted: Escrow not releasable'));
 
-      await expect(contractService.refundEscrow('2')).rejects.toThrow('execution reverted: Escrow not refundable');
+      await expect(contractService.releaseEscrow('test-invoice-123')).rejects.toThrow('execution reverted: Escrow not releasable');
     });
   });
 
@@ -207,56 +222,66 @@ describe('ContractService', () => {
       const mockEscrowData = {
         id: BigInt(1),
         invoiceId: 'test-invoice-123',
-        seller: '0xc2A10DCB44F8dB19199FD8D88c9aEF7367F012DC',
-        buyer: '0x742d35Cc6634C0532925a3b8D4C9db96DfbB8b2f',
-        amount: BigInt('100000000000000000000'), // 100 HBAR in wei
-        dueDate: BigInt(Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60),
-        status: 0, // Active
+        investor: '0xc2A10DCB44F8dB19199FD8D88c9aEF7367F012DC',
+        supplier: '0x742d35Cc6634C0532925a3b8D4C9db96DfbB8b2f',
+        amount: BigInt('100000000000000000000'),
+        nftSerialNumber: BigInt(1),
+        status: 0,
         createdAt: BigInt(Math.floor(Date.now() / 1000)),
+        releasedAt: BigInt(0),
       };
 
-      mockContract.getEscrow.mockResolvedValue(mockEscrowData);
+      mockContract.escrows.mockResolvedValue(mockEscrowData);
 
       const result = await contractService.getEscrow('1');
 
-      expect(result).toEqual({
-        id: BigInt(1),
-        invoiceId: 'test-invoice-123',
-        seller: '0xc2A10DCB44F8dB19199FD8D88c9aEF7367F012DC',
-        buyer: '0x742d35Cc6634C0532925a3b8D4C9db96DfbB8b2f',
-        amount: BigInt('100000000000000000000'),
-        dueDate: mockEscrowData.dueDate,
-        status: 0,
-        createdAt: mockEscrowData.createdAt,
-      });
+      expect(result).toEqual(mockEscrowData);
 
-      expect(mockContract.getEscrow).toHaveBeenCalledWith(1);
+      expect(mockContract.escrows).toHaveBeenCalledWith('1');
     });
 
     it('should return null for non-existent escrow', async () => {
-      mockContract.getEscrow.mockRejectedValue(new Error('execution reverted: Escrow does not exist'));
+      mockContract.escrows.mockRejectedValue(new Error('execution reverted: Escrow does not exist'));
 
       const result = await contractService.getEscrow('999');
       expect(result).toBeNull();
     });
   });
 
-  describe('getEscrowsByInvoice', () => {
-    it('should retrieve escrow IDs for invoice', async () => {
-      const mockEscrowIds = [BigInt(1), BigInt(2), BigInt(3)];
-      mockContract.getEscrowsByInvoice.mockResolvedValue(mockEscrowIds);
+  describe('getEscrowByInvoice', () => {
+    it('should get escrow by invoice ID', async () => {
+      const mockEscrowId = BigInt(1);
+      const mockEscrowData = {
+        id: BigInt(1),
+        invoiceId: 'test-invoice-123',
+        investor: '0xc2A10DCB44F8dB19199FD8D88c9aEF7367F012DC',
+        supplier: '0x742d35Cc6634C0532925a3b8D4C9db96DfbB8b2f',
+        amount: BigInt('100000000000000000000'),
+        nftSerialNumber: BigInt(1),
+        status: 0,
+        createdAt: BigInt(1640995200),
+        releasedAt: BigInt(0),
+      };
 
-      const result = await contractService.getEscrowsByInvoice('test-invoice-123');
+      mockContract.invoiceToEscrowId.mockResolvedValue(mockEscrowId);
+      
+      // Spy on getEscrow method
+      const getEscrowSpy = jest.spyOn(contractService, 'getEscrow').mockResolvedValue(mockEscrowData);
 
-      expect(result).toEqual(['1', '2', '3']);
-      expect(mockContract.getEscrowsByInvoice).toHaveBeenCalledWith('test-invoice-123');
+      const result = await contractService.getEscrowByInvoice('test-invoice-123');
+
+      expect(result).toEqual(mockEscrowData);
+      expect(mockContract.invoiceToEscrowId).toHaveBeenCalledWith('test-invoice-123');
+      expect(getEscrowSpy).toHaveBeenCalledWith('1');
+      
+      getEscrowSpy.mockRestore();
     });
 
-    it('should return empty array for invoice with no escrows', async () => {
-      mockContract.getEscrowsByInvoice.mockResolvedValue([]);
+    it('should return null for invoice with no escrow', async () => {
+      mockContract.invoiceToEscrowId.mockResolvedValue(BigInt(0));
 
-      const result = await contractService.getEscrowsByInvoice('empty-invoice');
-      expect(result).toEqual([]);
+      const result = await contractService.getEscrowByInvoice('empty-invoice');
+      expect(result).toBeNull();
     });
   });
 
@@ -266,15 +291,25 @@ describe('ContractService', () => {
       mockContract.owner.mockResolvedValue('0xc2A10DCB44F8dB19199FD8D88c9aEF7367F012DC');
       mockContract.platformFeeRate.mockResolvedValue(BigInt(250)); // 2.5%
       mockContract.feeRecipient.mockResolvedValue('0xc2A10DCB44F8dB19199FD8D88c9aEF7367F012DC');
+      
+      // Mock provider.getNetwork()
+      mockProvider.getNetwork = jest.fn().mockResolvedValue({
+        name: 'hedera-testnet',
+        chainId: 296,
+      });
 
       const result = await contractService.getContractInfo();
 
       expect(result).toEqual({
         address: '0x75e3c67F65a1a7671a4438F2d6ec7d755Ab5D36A',
-        balance: '500.0',
+        balance: '500',
         owner: '0xc2A10DCB44F8dB19199FD8D88c9aEF7367F012DC',
-        platformFeeRate: '2.5',
+        platformFeeRate: '250',
         feeRecipient: '0xc2A10DCB44F8dB19199FD8D88c9aEF7367F012DC',
+        network: {
+          name: 'hedera-testnet',
+          chainId: 296,
+        },
       });
     });
   });
@@ -285,7 +320,7 @@ describe('ContractService', () => {
       expect(txUrl).toBe('https://hashscan.io/testnet/transaction/0xabc123');
 
       const contractUrl = contractService.getContractHashScanUrl();
-      expect(contractUrl).toBe('https://hashscan.io/testnet/contract/0x1234567890123456789012345678901234567890');
+      expect(contractUrl).toBe('https://hashscan.io/testnet/contract/0x75e3c67F65a1a7671a4438F2d6ec7d755Ab5D36A');
     });
   });
 });

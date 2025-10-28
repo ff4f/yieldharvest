@@ -1,369 +1,244 @@
 import { HashConnect, HashConnectConnectionState, SessionData } from 'hashconnect';
-import { AccountId, LedgerId } from '@hashgraph/sdk';
-
-export type WalletType = 'hashpack' | 'blade';
+import { LedgerId, AccountId, Transaction } from '@hashgraph/sdk';
 
 export interface WalletConnection {
   accountId: string;
-  publicKey?: string;
-  network: 'mainnet' | 'testnet';
-  isConnected: boolean;
-  walletType: WalletType;
-  hbarBalance?: string;
-  topic?: string;
+  network: string;
+  walletType: 'hashpack' | 'blade';
 }
 
 export interface WalletBalance {
   hbar: string;
-  tokens: {
+  tokens: Array<{
     tokenId: string;
-    symbol: string;
     balance: string;
-    decimals: number;
-  }[];
-}
-
-export interface TransactionResult {
-  transactionId: string;
-  receipt?: any;
-  hashScanUrl: string;
-}
-
-interface WalletEventListener {
-  (event: { type: string; data?: any }): void;
+    symbol: string;
+  }>;
 }
 
 class WalletService {
   private hashConnect: HashConnect | null = null;
-  private connection: WalletConnection | null = null;
-  private network: 'mainnet' | 'testnet';
-  private listeners: WalletEventListener[] = [];
   private connectionState: HashConnectConnectionState = HashConnectConnectionState.Disconnected;
-  private pairingData: SessionData | null = null;
+  private sessionData: SessionData | null = null;
+  private listeners: Array<(connection: WalletConnection | null) => void> = [];
 
-  constructor(network: 'mainnet' | 'testnet' = 'testnet') {
-    this.network = network;
+  constructor() {
+    this.initializeHashConnect();
   }
 
-  async initialize(): Promise<void> {
-    await this.initializeHashConnect();
-  }
-
-  private async initializeHashConnect(): Promise<void> {
+  private async initializeHashConnect() {
     try {
-      // Initialize with app metadata
+      // WalletConnect app metadata
       const appMetadata = {
         name: 'YieldHarvest',
-        description: 'Invoice Factoring Platform on Hedera',
-        icons: [typeof window !== 'undefined' ? `${window.location.origin}/favicon.ico` : ''],
-        url: typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000',
+        description: 'Invoice factoring platform on Hedera',
+        icons: ['https://yieldharvest.app/icon.png'],
+        url: 'https://yieldharvest.app'
       };
 
-      // Initialize HashConnect with v3 API
+      // Initialize HashConnect with WalletConnect project ID
       this.hashConnect = new HashConnect(
-        this.network === 'mainnet' ? LedgerId.MAINNET : LedgerId.TESTNET,
-        'yieldharvest-project-id', // You'll need to get a real project ID from WalletConnect Cloud
+        LedgerId.TESTNET,
+        import.meta.env.VITE_WALLETCONNECT_PROJECT_ID || 'your-project-id',
         appMetadata,
         true // debug mode
       );
 
       // Set up event listeners
-      this.hashConnect.connectionStatusChangeEvent.on((state) => {
-        console.log('HashConnect connection status changed:', state);
-        this.connectionState = state;
-        this.notifyListeners({ type: 'connectionStatusChange', data: state });
-      });
-
-      this.hashConnect.pairingEvent.on((data) => {
-        console.log('HashConnect pairing event:', data);
-        this.pairingData = data;
-        
-        if (data.accountIds && data.accountIds.length > 0) {
-          this.connection = {
-            accountId: data.accountIds[0],
-            publicKey: data.publicKey,
-            network: this.network,
-            isConnected: true,
-            walletType: 'hashpack',
-            topic: data.topic,
-          };
-          
-          // Persist connection
-          this.saveConnectionToStorage();
-          
-          // Fetch balance
-          this.updateBalance();
-          
-          this.notifyListeners({ type: 'connected', data: this.connection });
-        }
-      });
+      this.setupEventListeners();
 
       // Initialize HashConnect
       await this.hashConnect.init();
-      
-      // Check for existing connection
-      await this.checkExistingConnection();
-      
+
+      // Check for existing connections
+      this.checkExistingConnection();
     } catch (error) {
       console.error('Failed to initialize HashConnect:', error);
-      this.notifyListeners({ type: 'error', data: error });
     }
   }
 
-  private async checkExistingConnection(): Promise<void> {
+  private setupEventListeners() {
+    if (!this.hashConnect) return;
+
+    // Connection status change
+    this.hashConnect.connectionStatusChangeEvent.on((state: HashConnectConnectionState) => {
+      this.connectionState = state;
+      console.log('Connection state changed:', state);
+    });
+
+    // Pairing event
+    this.hashConnect.pairingEvent.on((sessionData: SessionData) => {
+      this.sessionData = sessionData;
+      console.log('Paired with wallet:', sessionData);
+      
+      // Persist connection data
+      this.persistConnection(sessionData);
+      
+      // Notify listeners
+      this.notifyListeners();
+    });
+
+    // Disconnection event
+    this.hashConnect.disconnectionEvent.on(() => {
+      this.sessionData = null;
+      console.log('Disconnected from wallet');
+      
+      // Clear persisted data
+      this.clearPersistedConnection();
+      
+      // Notify listeners
+      this.notifyListeners();
+    });
+  }
+
+  private checkExistingConnection() {
     try {
       const savedConnection = localStorage.getItem('yieldharvest_wallet_connection');
-      const savedTopic = localStorage.getItem('yieldharvest_wallet_topic');
-      
-      if (savedConnection && savedTopic && this.hashConnect) {
+      if (savedConnection) {
         const connectionData = JSON.parse(savedConnection);
         
-        // Try to reconnect using saved topic
-        try {
-          const state = await this.hashConnect.connect(savedTopic);
-          
-          if (state && state.accountIds && state.accountIds.length > 0) {
-            this.connection = {
-              ...connectionData,
-              isConnected: true,
-            };
-            
-            this.updateBalance();
-            this.notifyListeners({ type: 'reconnected', data: this.connection });
-            console.log('Successfully reconnected to existing wallet session');
-          } else {
-            // Clear invalid saved data
-            this.clearStoredConnection();
-          }
-        } catch (error) {
-          console.warn('Failed to reconnect to saved session:', error);
-          this.clearStoredConnection();
+        // Restore session data if valid
+        if (connectionData.accountIds && connectionData.accountIds.length > 0) {
+          this.sessionData = {
+            metadata: connectionData.metadata || {
+              name: 'Unknown Wallet',
+              description: '',
+              url: '',
+              icons: []
+            },
+            accountIds: connectionData.accountIds,
+            network: connectionData.network || 'testnet'
+          };
+          this.connectionState = HashConnectConnectionState.Paired;
+          this.notifyListeners();
         }
       }
     } catch (error) {
       console.error('Error checking existing connection:', error);
-      this.clearStoredConnection();
     }
   }
 
-  private saveConnectionToStorage(): void {
-    if (this.connection) {
-      localStorage.setItem('yieldharvest_wallet_connection', JSON.stringify(this.connection));
-      if (this.connection.topic) {
-        localStorage.setItem('yieldharvest_wallet_topic', this.connection.topic);
-      }
-    }
-  }
-
-  private clearStoredConnection(): void {
-    localStorage.removeItem('yieldharvest_wallet_connection');
-    localStorage.removeItem('yieldharvest_wallet_topic');
-  }
-
-  private async updateBalance(): Promise<void> {
-    if (!this.connection?.accountId) return;
-    
+  private persistConnection(sessionData: SessionData) {
     try {
-      // Use Mirror Node API to get balance
-      const response = await fetch(
-        `https://testnet.mirrornode.hedera.com/api/v1/accounts/${this.connection.accountId}`
-      );
-      
-      if (response.ok) {
-        const data = await response.json();
-        const hbarBalance = (parseInt(data.balance.balance) / 100000000).toFixed(2); // Convert tinybars to HBAR
-        
-        if (this.connection) {
-          this.connection.hbarBalance = hbarBalance;
-          this.saveConnectionToStorage();
-          this.notifyListeners({ type: 'balanceUpdated', data: { balance: hbarBalance } });
-        }
-      }
+      const connectionData = {
+        accountIds: sessionData.accountIds,
+        network: sessionData.network,
+        metadata: sessionData.metadata,
+        timestamp: Date.now()
+      };
+      localStorage.setItem('yieldharvest_wallet_connection', JSON.stringify(connectionData));
     } catch (error) {
-      console.warn('Failed to fetch balance:', error);
+      console.error('Error persisting connection:', error);
     }
   }
 
-  private notifyListeners(event: { type: string; data?: any }): void {
-    this.listeners.forEach(listener => {
-      try {
-        listener(event);
-      } catch (error) {
-        console.error('Error in wallet event listener:', error);
-      }
-    });
-  }
-
-  // Public methods
-  async connect(): Promise<WalletConnection> {
-    if (!this.hashConnect) {
-      throw new Error('HashConnect not initialized');
-    }
-
-    if (this.connection?.isConnected) {
-      return this.connection;
-    }
-
+  private clearPersistedConnection() {
     try {
-      // Check for available wallet extensions
-      const extensions = this.hashConnect.findLocalWallets();
-      console.log('Available wallet extensions:', extensions);
+      localStorage.removeItem('yieldharvest_wallet_connection');
+    } catch (error) {
+      console.error('Error clearing persisted connection:', error);
+    }
+  }
 
-      // Create pairing and connect
-      const state = await this.hashConnect.connect();
-      const pairingString = this.hashConnect.generatePairingString(state, this.network, false);
-      
-      // Store topic for reconnection
-      if (state?.topic) {
-        localStorage.setItem('yieldharvest_wallet_topic', state.topic);
+  private notifyListeners() {
+    const connection = this.getConnection();
+    this.listeners.forEach(listener => listener(connection));
+  }
+
+  public async connect(): Promise<WalletConnection | null> {
+    try {
+      if (!this.hashConnect) {
+        throw new Error('HashConnect not initialized');
       }
 
-      // Connect to local wallet (HashPack extension)
-      await this.hashConnect.connectToLocalWallet(pairingString);
+      // Open pairing modal
+      this.hashConnect.openPairingModal();
       
-      // Return a promise that resolves when pairing is complete
       return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
-          reject(new Error('Wallet connection timeout'));
-        }, 30000); // 30 second timeout
-        
-        const listener = (event: { type: string; data?: any }) => {
-          if (event.type === 'connected' && event.data) {
+          reject(new Error('Connection timeout'));
+        }, 60000); // 60 second timeout
+
+        const listener = (connection: WalletConnection | null) => {
+          if (connection) {
             clearTimeout(timeout);
             this.removeListener(listener);
-            resolve(event.data);
+            resolve(connection);
           }
         };
-        
+
         this.addListener(listener);
       });
-      
     } catch (error) {
-      console.error('Wallet connection failed:', error);
-      throw new Error(`Failed to connect wallet: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-
-  async disconnect(): Promise<void> {
-    try {
-      if (this.hashConnect) {
-        await this.hashConnect.disconnect();
-      }
-      
-      this.connection = null;
-      this.pairingData = null;
-      this.clearStoredConnection();
-      
-      this.notifyListeners({ type: 'disconnected' });
-      console.log('Wallet disconnected successfully');
-    } catch (error) {
-      console.error('Error disconnecting wallet:', error);
+      console.error('Error connecting to wallet:', error);
       throw error;
     }
   }
 
-  async signTransaction(transactionBytes: Uint8Array): Promise<Uint8Array> {
-    if (!this.hashConnect || !this.connection?.isConnected) {
-      throw new Error('Wallet not connected');
-    }
-
-    if (!this.connection.topic) {
-      throw new Error('No active wallet session');
-    }
-
+  public async disconnect(): Promise<void> {
     try {
-      const result = await this.hashConnect.sendTransaction(
-        this.connection.topic,
-        {
-          byteArray: transactionBytes,
-          metadata: {
-            accountToSign: this.connection.accountId,
-            returnTransaction: false,
-          },
-        }
-      );
-
-      if (result.success && result.signedTransaction) {
-        return new Uint8Array(result.signedTransaction);
-      } else {
-        throw new Error(result.error || 'Transaction signing failed');
+      if (this.hashConnect) {
+        await this.hashConnect.disconnect();
       }
     } catch (error) {
-      console.error('Transaction signing failed:', error);
-      throw new Error(`Failed to sign transaction: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error('Error disconnecting from wallet:', error);
+      throw error;
     }
   }
 
-  async refreshBalance(): Promise<WalletConnection | null> {
-    if (!this.connection) {
+  public getConnection(): WalletConnection | null {
+    if (!this.sessionData || !this.sessionData.accountIds.length) {
       return null;
     }
 
-    await this.updateBalance();
-    return this.connection;
-  }
-
-  async checkWalletAvailability(): Promise<Record<WalletType, boolean>> {
-    const availability: Record<WalletType, boolean> = {
-      hashpack: false,
-      blade: false,
+    return {
+      accountId: this.sessionData.accountIds[0],
+      network: this.sessionData.network,
+      walletType: 'hashpack' // Default to hashpack
     };
-
-    if (typeof window !== 'undefined') {
-      // Check HashPack
-      availability.hashpack = !!(window as any).hashpack || 
-                              (this.hashConnect?.findLocalWallets()?.length || 0) > 0;
-      
-      // Check Blade
-      availability.blade = !!(window as any).bladeWallet;
-    }
-
-    return availability;
   }
 
-  // Event management
-  addListener(listener: WalletEventListener): void {
+  public isConnected(): boolean {
+    return this.connectionState === HashConnectConnectionState.Paired && 
+           this.sessionData !== null &&
+           this.sessionData.accountIds.length > 0;
+  }
+
+  public getConnectionState(): HashConnectConnectionState {
+    return this.connectionState;
+  }
+
+  public async signTransaction(transaction: Transaction): Promise<any> {
+    try {
+      if (!this.hashConnect || !this.sessionData || !this.sessionData.accountIds.length) {
+        throw new Error('Wallet not connected');
+      }
+
+      const accountId = this.sessionData.accountIds[0];
+      const response = await this.hashConnect.sendTransaction(accountId, transaction);
+      
+      return response;
+    } catch (error) {
+      console.error('Error signing transaction:', error);
+      throw error;
+    }
+  }
+
+  public addListener(listener: (connection: WalletConnection | null) => void) {
     this.listeners.push(listener);
   }
 
-  removeListener(listener: WalletEventListener): void {
+  public removeListener(listener: (connection: WalletConnection | null) => void) {
     const index = this.listeners.indexOf(listener);
     if (index > -1) {
       this.listeners.splice(index, 1);
     }
   }
 
-  // Getters
-  getConnection(): WalletConnection | null {
-    return this.connection;
-  }
-
-  isConnected(): boolean {
-    return this.connection?.isConnected || false;
-  }
-
-  getAccountId(): string | null {
-    return this.connection?.accountId || null;
-  }
-
-  getNetwork(): 'mainnet' | 'testnet' {
-    return this.network;
-  }
-
-  getHashScanUrl(transactionId: string): string {
-    const baseUrl = this.network === 'mainnet' 
-      ? 'https://hashscan.io/mainnet' 
-      : 'https://hashscan.io/testnet';
-    return `${baseUrl}/transaction/${transactionId}`;
-  }
-
-  getMirrorNodeUrl(): string {
-    return this.network === 'mainnet'
-      ? 'https://mainnet-public.mirrornode.hedera.com'
-      : 'https://testnet.mirrornode.hedera.com';
+  public isWalletAvailable(): boolean {
+    return this.hashConnect !== null;
   }
 }
 
-// Export singleton instance
-export const walletService = new WalletService('testnet');
+export const walletService = new WalletService();
 export default walletService;

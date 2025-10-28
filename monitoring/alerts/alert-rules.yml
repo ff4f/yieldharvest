@@ -1,0 +1,151 @@
+groups:
+  - name: yieldharvest-api-alerts
+    rules:
+      - alert: HighErrorRate
+        expr: sum(rate(http_requests_total{status_code=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) * 100 > 5
+        for: 2m
+        labels:
+          severity: critical
+          service: yieldharvest-api
+        annotations:
+          summary: "High API error rate detected"
+          description: "API error rate is {{ $value }}% which is above the 5% threshold for more than 2 minutes"
+          runbook_url: "https://docs.yieldharvest.com/runbooks/high-error-rate"
+
+      - alert: APIResponseTimeHigh
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: yieldharvest-api
+        annotations:
+          summary: "API response time is high"
+          description: "95th percentile response time is {{ $value }}s which is above 2s threshold"
+          runbook_url: "https://docs.yieldharvest.com/runbooks/high-response-time"
+
+      - alert: APIDown
+        expr: up{job="yieldharvest-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: yieldharvest-api
+        annotations:
+          summary: "YieldHarvest API is down"
+          description: "YieldHarvest API has been down for more than 1 minute"
+          runbook_url: "https://docs.yieldharvest.com/runbooks/api-down"
+
+  - name: yieldharvest-hedera-alerts
+    rules:
+      - alert: MirrorNodeHighLatency
+        expr: histogram_quantile(0.95, rate(mirror_node_latency_seconds_bucket[5m])) > 3
+        for: 3m
+        labels:
+          severity: warning
+          service: hedera-mirror-node
+        annotations:
+          summary: "Mirror Node API latency is high"
+          description: "95th percentile Mirror Node latency is {{ $value }}s which is above 3s threshold"
+          runbook_url: "https://docs.yieldharvest.com/runbooks/mirror-node-latency"
+
+      - alert: HederaTransactionFailureRate
+        expr: sum(rate(hedera_tx_duration_seconds_count{status="error"}[5m])) / sum(rate(hedera_tx_duration_seconds_count[5m])) * 100 > 10
+        for: 2m
+        labels:
+          severity: critical
+          service: hedera-transactions
+        annotations:
+          summary: "High Hedera transaction failure rate"
+          description: "Hedera transaction failure rate is {{ $value }}% which is above 10% threshold"
+          runbook_url: "https://docs.yieldharvest.com/runbooks/hedera-tx-failures"
+
+      - alert: HCSMessageProcessingLag
+        expr: histogram_quantile(0.95, rate(hcs_message_latency_seconds_bucket[5m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: hedera-hcs
+        annotations:
+          summary: "HCS message processing lag is high"
+          description: "95th percentile HCS message processing time is {{ $value }}s which is above 10s threshold"
+          runbook_url: "https://docs.yieldharvest.com/runbooks/hcs-lag"
+
+  - name: yieldharvest-business-alerts
+    rules:
+      - alert: NoMilestonesProcessed
+        expr: increase(invoice_processing_duration_seconds_count{operation="milestone"}[10m]) == 0
+        for: 10m
+        labels:
+          severity: warning
+          service: yieldharvest-business
+        annotations:
+          summary: "No milestones processed in the last 10 minutes"
+          description: "No milestone processing activity detected for 10 minutes, this might indicate a system issue"
+          runbook_url: "https://docs.yieldharvest.com/runbooks/no-milestones"
+
+      - alert: InvoiceProcessingStalled
+        expr: increase(invoice_processing_duration_seconds_count{operation="create"}[15m]) == 0
+        for: 15m
+        labels:
+          severity: critical
+          service: yieldharvest-business
+        annotations:
+          summary: "Invoice processing has stalled"
+          description: "No new invoices have been processed in the last 15 minutes"
+          runbook_url: "https://docs.yieldharvest.com/runbooks/invoice-stalled"
+
+      - alert: LowCacheHitRate
+        expr: sum(rate(cache_operations_total{operation="hit"}[5m])) / sum(rate(cache_operations_total{operation=~"hit|miss"}[5m])) * 100 < 70
+        for: 10m
+        labels:
+          severity: warning
+          service: yieldharvest-cache
+        annotations:
+          summary: "Cache hit rate is low"
+          description: "Cache hit rate is {{ $value }}% which is below 70% threshold"
+          runbook_url: "https://docs.yieldharvest.com/runbooks/low-cache-hit-rate"
+
+  - name: yieldharvest-infrastructure-alerts
+    rules:
+      - alert: HighWebSocketConnections
+        expr: websocket_clients_gauge > 1000
+        for: 5m
+        labels:
+          severity: warning
+          service: yieldharvest-websocket
+        annotations:
+          summary: "High number of WebSocket connections"
+          description: "WebSocket connections count is {{ $value }} which is above 1000 threshold"
+          runbook_url: "https://docs.yieldharvest.com/runbooks/high-websocket-connections"
+
+      - alert: DatabaseConnectionIssues
+        expr: up{job="yieldharvest-database"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: yieldharvest-database
+        annotations:
+          summary: "Database connection issues detected"
+          description: "Database has been unreachable for more than 2 minutes"
+          runbook_url: "https://docs.yieldharvest.com/runbooks/database-down"
+
+      - alert: HighMemoryUsage
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          service: yieldharvest-infrastructure
+        annotations:
+          summary: "High memory usage detected"
+          description: "Memory usage is {{ $value }}% which is above 85% threshold"
+          runbook_url: "https://docs.yieldharvest.com/runbooks/high-memory-usage"
+
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+          service: yieldharvest-infrastructure
+        annotations:
+          summary: "High CPU usage detected"
+          description: "CPU usage is {{ $value }}% which is above 80% threshold"
+          runbook_url: "https://docs.yieldharvest.com/runbooks/high-cpu-usage"

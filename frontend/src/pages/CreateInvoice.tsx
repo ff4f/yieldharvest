@@ -1,12 +1,13 @@
 import React, { useState } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { ArrowLeft, Upload, FileText, DollarSign, Calendar, Building, CheckCircle, AlertCircle, Eye, Wallet, ExternalLink } from 'lucide-react'
+import { ArrowLeft, Upload, FileText, DollarSign, Calendar, Building, CheckCircle, Eye, Wallet, ExternalLink } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useCreateInvoice } from '@/hooks/useInvoices'
 import { ProofPill } from '@/components/ProofPill'
 import { CreateInvoiceRequest, CreateInvoiceResponse } from '@/types/api'
 import { useWallet } from '@/contexts/WalletContext'
+import transactionService from '@/services/transactionService'
 
 const CreateInvoice: React.FC = () => {
   const navigate = useNavigate()
@@ -52,14 +53,31 @@ const CreateInvoice: React.FC = () => {
     }
     
     try {
-      // Create invoice through backend API (handles all Hedera operations)
-      const response = await createInvoiceMutation.mutateAsync(formData)
-      setCreatedInvoice(response)
-      // Transaction details are included in the response
-      if (response.proofs?.mintTransactionId) {
-        setTransactionResult({
-          transactionId: response.proofs.mintTransactionId,
-          hashScanUrl: `https://hashscan.io/testnet/transaction/${response.proofs.mintTransactionId}`
+      // Use transactionService for wallet-signed transactions
+      const result = await transactionService.mintInvoice(formData)
+      
+      // Set transaction result for UI display
+      setTransactionResult({
+        transactionId: result.transactionId,
+        hashScanUrl: result.hashScanUrl
+      })
+      
+      // Also set the created invoice if available in receipt
+      if (result.receipt) {
+        setCreatedInvoice({
+          invoice: {
+            id: result.receipt.tokenId + '-' + result.receipt.serialNumber,
+            tokenId: result.receipt.tokenId,
+            serialNumber: result.receipt.serialNumber,
+            fileId: result.receipt.fileId,
+            topicId: result.receipt.topicId,
+            ...formData
+          },
+          proofs: {
+            mintTransactionId: result.transactionId,
+            fileUploadTransactionId: result.transactionId,
+            hcsMessageId: result.transactionId
+          }
         })
       }
     } catch (error) {
@@ -108,7 +126,7 @@ const CreateInvoice: React.FC = () => {
         <div className="flex items-center gap-4">
           {!isConnected ? (
             <button
-              onClick={connect}
+              onClick={() => connect('hashpack')}
               className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
             >
               <Wallet className="h-4 w-4" />
@@ -162,6 +180,7 @@ const CreateInvoice: React.FC = () => {
                         value={formData.invoiceNumber}
                         onChange={handleInputChange}
                         placeholder="INV-001"
+                        data-testid="invoice-number"
                         disabled={createInvoiceMutation.isPending || !!createdInvoice}
                         className="w-full pl-10 pr-4 py-2 border border-input rounded-md focus:outline-none focus:ring-2 focus:ring-ring"
                       />
@@ -184,6 +203,7 @@ const CreateInvoice: React.FC = () => {
                         value={formData.amount}
                         onChange={handleInputChange}
                         placeholder="5000.00"
+                        data-testid="amount"
                         className="w-full pl-10 pr-4 py-2 border border-input rounded-md focus:outline-none focus:ring-2 focus:ring-ring"
                       />
                     </div>
@@ -204,6 +224,7 @@ const CreateInvoice: React.FC = () => {
                         value={formData.buyerId}
                         onChange={handleInputChange}
                         placeholder="buyer-123"
+                        data-testid="buyer-id-input"
                         disabled={createInvoiceMutation.isPending || !!createdInvoice}
                         className="w-full pl-10 pr-4 py-2 border border-input rounded-md focus:outline-none focus:ring-2 focus:ring-ring"
                       />
@@ -282,6 +303,7 @@ const CreateInvoice: React.FC = () => {
                           accept=".pdf"
                           required
                           onChange={handleFileChange}
+                          data-testid="invoice-file-input"
                           className="hidden"
                         />
                       </div>
@@ -300,7 +322,7 @@ const CreateInvoice: React.FC = () => {
                 <div className="flex gap-4">
                   {!createdInvoice ? (
                   <>
-                    <Button type="submit" disabled={createInvoiceMutation.isPending} className="flex-1">
+                    <Button type="submit" disabled={createInvoiceMutation.isPending} className="flex-1" data-testid="create-invoice-submit">
                       {createInvoiceMutation.isPending ? (
                         <>
                           <Upload className="mr-2 h-4 w-4 animate-spin" />
@@ -420,6 +442,21 @@ const CreateInvoice: React.FC = () => {
                     </Button>
                   </div>
                 </div>
+                
+                {/* Proof Pills for on-chain evidence */}
+                {createdInvoice && (
+                  <div className="space-y-3">
+                    <p className="text-sm font-medium text-green-800">On-Chain Proofs:</p>
+                    <ProofPill
+                      tokenId={createdInvoice.invoice.tokenId}
+                      serialNumber={createdInvoice.invoice.serialNumber}
+                      fileId={createdInvoice.invoice.fileId}
+                      topicId={createdInvoice.invoice.topicId}
+                      mintTransactionId={transactionResult.transactionId}
+                      variant="default"
+                    />
+                  </div>
+                )}
                 
                 <div className="flex gap-2">
                   <Button

@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyPluginOptions, FastifyRequest, FastifyReply } from 'fastify';
-import { authenticate, requireRole, UserRole } from '../middleware/auth';
+import { walletJwtGuard, walletAdminGuard } from '../middleware/auth.middleware';
 import { validate, userSchemas, paramSchemas } from '../middleware/validation';
+import { UserRole } from '../middleware/auth';
 import { z } from 'zod';
 import { NotFoundError } from '../middleware/errorHandler';
 import { auditLogger } from '../utils/logger';
@@ -11,7 +12,7 @@ export async function userRoutes(
 ): Promise<void> {
   // Get all users (admin only)
   fastify.get('/', {
-    preHandler: [authenticate, requireRole([UserRole.ADMIN])],
+    preHandler: [walletAdminGuard],
     schema: {
       tags: ['users'],
       summary: 'Get all users',
@@ -37,8 +38,8 @@ export async function userRoutes(
                   id: { type: 'string' },
                   email: { type: 'string' },
                   name: { type: 'string' },
-                  role: { type: 'string' },
-                  hederaAccountId: { type: 'string' },
+                  roles: { type: 'string' },
+                  accountId: { type: 'string' },
                   createdAt: { type: 'string' },
                 },
               },
@@ -75,8 +76,8 @@ export async function userRoutes(
           id: true,
           email: true,
           name: true,
-          role: true,
-          hederaAccountId: true,
+          roles: true,
+          accountId: true,
           createdAt: true,
         },
         skip: (page - 1) * limit,
@@ -109,7 +110,7 @@ export async function userRoutes(
 
   // Get user by ID
   fastify.get('/:id', {
-    preHandler: [authenticate, requireRole([UserRole.ADMIN, UserRole.SUPPLIER, UserRole.INVESTOR])],
+    preHandler: [walletJwtGuard],
     schema: {
       tags: ['users'],
       summary: 'Get user by ID',
@@ -126,7 +127,7 @@ export async function userRoutes(
     const { id } = request.params as { id: string };
     
     // Users can only access their own data unless they're admin
-    if (request.user!.role !== 'admin' && request.user!.id !== id) {
+    if (request.walletUser!.roles.includes('admin') === false && request.walletUser!.accountId !== id) {
       throw new NotFoundError('User');
     }
     
@@ -136,8 +137,8 @@ export async function userRoutes(
         id: true,
         email: true,
         name: true,
-        role: true,
-        hederaAccountId: true,
+        roles: true,
+        accountId: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -149,7 +150,7 @@ export async function userRoutes(
     
     auditLogger.logAudit({
         correlationId: request.correlationId || '',
-        userId: request.user?.id || '',
+        userId: request.walletUser?.accountId || '',
         endpoint: '/users/:id',
         method: 'GET',
         action: 'read',
@@ -163,7 +164,7 @@ export async function userRoutes(
 
   // Create user (admin only)
   fastify.post('/', {
-    preHandler: [authenticate, requireRole([UserRole.ADMIN]), validate(userSchemas.register)],
+    preHandler: [walletAdminGuard, validate(userSchemas.register)],
     schema: {
       tags: ['users'],
       summary: 'Create new user',
@@ -178,8 +179,8 @@ export async function userRoutes(
         id: true,
         email: true,
         name: true,
-        role: true,
-        hederaAccountId: true,
+        roles: true,
+        accountId: true,
         createdAt: true,
       },
     });
@@ -201,7 +202,7 @@ export async function userRoutes(
 
   // Update user
   fastify.put('/:id', {
-    preHandler: [authenticate, requireRole([UserRole.ADMIN]), validate(userSchemas.updateProfile)],
+    preHandler: [walletAdminGuard, validate(userSchemas.updateProfile)],
     schema: {
       tags: ['users'],
       summary: 'Update user',
@@ -234,15 +235,15 @@ export async function userRoutes(
         id: true,
         email: true,
         name: true,
-        role: true,
-        hederaAccountId: true,
+        roles: true,
+        accountId: true,
         updatedAt: true,
       },
     });
     
     auditLogger.logAudit({
         correlationId: request.correlationId || '',
-        userId: request.user?.id || '',
+        userId: request.walletUser?.accountId || '',
         endpoint: '/users/:id',
         method: 'PUT',
         action: 'update',
@@ -258,7 +259,7 @@ export async function userRoutes(
 
   // Delete user (admin only)
   fastify.delete('/:id', {
-    preHandler: [authenticate, requireRole([UserRole.ADMIN])],
+    preHandler: [walletAdminGuard],
     schema: {
       tags: ['users'],
       summary: 'Delete user',

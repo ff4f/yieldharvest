@@ -28,5 +28,6 @@ export default defineConfig({
   },
   define: {
     global: 'globalThis',
+    'process.env': 'import.meta.env',
   },
 })

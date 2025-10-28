@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 
 // Mock dependencies BEFORE importing the service
 const mockAxiosInstance = {
-  get: jest.fn().mockResolvedValue({ data: {} }),
+  get: jest.fn(),
   interceptors: {
     request: { use: jest.fn() },
     response: { use: jest.fn() },
@@ -74,7 +74,7 @@ describe('MirrorNodeService', () => {
     });
   });
 
-  describe('getNftsByTokenId', () => {
+  describe('getNFTsByToken', () => {
     it('should fetch NFTs successfully', async () => {
       const mockResponse = {
         data: {
@@ -92,26 +92,26 @@ describe('MirrorNodeService', () => {
       };
 
       (mockAxiosInstance.get as jest.Mock).mockResolvedValue(mockResponse);
-      (mockCacheService.get as jest.Mock).mockReturnValue(null);
 
-      const result = await mirrorNodeService.getNftsByTokenId('0.0.123456');
+      const result = await mirrorNodeService.getNFTsByToken('0.0.123456');
 
       expect(result).toEqual(mockResponse.data.nfts);
-      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/v1/tokens/0.0.123456/nfts');
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/v1/tokens/0.0.123456/nfts', {
+        params: { limit: 25, order: 'desc' }
+      });
     });
 
-    it('should return cached data when available', async () => {
-      const cachedData = [{ token_id: '0.0.123456', serial_number: 1 }];
-      (mockCacheService.get as jest.Mock).mockReturnValue(cachedData);
+    it('should return empty array when no NFTs found', async () => {
+      const mockResponse = { data: {} };
+      (mockAxiosInstance.get as jest.Mock).mockResolvedValue(mockResponse);
 
-      const result = await mirrorNodeService.getNftsByTokenId('0.0.123456');
+      const result = await mirrorNodeService.getNFTsByToken('0.0.123456');
 
-      expect(result).toEqual(cachedData);
-      expect(mockAxiosInstance.get).not.toHaveBeenCalled();
+      expect(result).toEqual([]);
     });
   });
 
-  describe('getNftBySerial', () => {
+  describe('getNFTInfo', () => {
     it('should fetch single NFT successfully', async () => {
       const mockResponse = {
         data: {
@@ -127,14 +127,14 @@ describe('MirrorNodeService', () => {
       (mockAxiosInstance.get as jest.Mock).mockResolvedValue(mockResponse);
       (mockCacheService.get as jest.Mock).mockReturnValue(null);
 
-      const result = await mirrorNodeService.getNftBySerial('0.0.123456', 1);
+      const result = await mirrorNodeService.getNFTInfo('0.0.123456', '1');
 
       expect(result).toEqual(mockResponse.data);
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/v1/tokens/0.0.123456/nfts/1');
     });
   });
 
-  describe('getHcsMessages', () => {
+  describe('getHCSMessages', () => {
     it('should fetch HCS messages successfully', async () => {
       const mockResponse = {
         data: {
@@ -147,10 +147,12 @@ describe('MirrorNodeService', () => {
               running_hash_version: 3,
               payer_account_id: '0.0.123',
               message: Buffer.from(JSON.stringify({
-                type: 'INVOICE_ISSUED',
+                type: 'invoice',
                 tokenId: '0.0.123456',
-                serialNumber: 1,
-                timestamp: '2024-01-15T10:00:00Z'
+                serialNumber: '1',
+                status: 'issued',
+                amount: '1000.00',
+                currency: 'USD'
               })).toString('base64')
             }
           ]
@@ -160,18 +162,28 @@ describe('MirrorNodeService', () => {
       (mockAxiosInstance.get as jest.Mock).mockResolvedValue(mockResponse);
       (mockCacheService.get as jest.Mock).mockReturnValue(null);
 
-      const result = await mirrorNodeService.getHcsMessages('0.0.654321');
+      const result = await mirrorNodeService.getHCSMessages('0.0.654321');
 
       expect(result).toEqual(mockResponse.data.messages);
-      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/v1/topics/0.0.654321/messages');
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/v1/topics/0.0.654321/messages', {
+        params: { limit: 25, order: 'desc' }
+      });
     });
   });
 
-  describe('parseInvoiceMessage', () => {
-    it('should parse valid base64 encoded JSON message', () => {
-      const messageData = { event: 'issued', invoiceId: '123' };
+  describe('parseInvoiceMessages', () => {
+    it('should parse valid invoice messages', () => {
+      const messageData = {
+        type: 'invoice',
+        tokenId: '0.0.123456',
+        serialNumber: '1',
+        status: 'issued',
+        amount: '1000.00',
+        currency: 'USD'
+      };
       const base64Message = Buffer.from(JSON.stringify(messageData)).toString('base64');
-      const mockMessage = {
+      
+      const mockMessages = [{
         consensus_timestamp: '1640995200.000000000',
         topic_id: '0.0.654321',
         sequence_number: 1,
@@ -179,15 +191,21 @@ describe('MirrorNodeService', () => {
         running_hash_version: 3,
         payer_account_id: '0.0.123',
         message: base64Message
-      };
+      }];
 
-      const result = mirrorNodeService.parseInvoiceMessage(mockMessage);
+      const result = mirrorNodeService.parseInvoiceMessages(mockMessages);
 
-      expect(result).toEqual(messageData);
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({
+        tokenId: '0.0.123456',
+        serialNumber: '1',
+        status: 'issued',
+        sequenceNumber: 1
+      });
     });
 
-    it('should return null for invalid base64', () => {
-      const mockMessage = {
+    it('should filter out invalid messages', () => {
+      const mockMessages = [{
         consensus_timestamp: '1640995200.000000000',
         topic_id: '0.0.654321',
         sequence_number: 1,
@@ -195,24 +213,14 @@ describe('MirrorNodeService', () => {
         running_hash_version: 3,
         payer_account_id: '0.0.123',
         message: 'invalid-base64'
-      };
-      const result = mirrorNodeService.parseInvoiceMessage(mockMessage);
-      expect(result).toBeNull();
+      }];
+      const result = mirrorNodeService.parseInvoiceMessages(mockMessages);
+      expect(result).toHaveLength(0);
     });
 
-    it('should return null for invalid JSON', () => {
-      const invalidJson = Buffer.from('invalid json').toString('base64');
-      const mockMessage = {
-        consensus_timestamp: '1640995200.000000000',
-        topic_id: '0.0.654321',
-        sequence_number: 1,
-        running_hash: 'hash123',
-        running_hash_version: 3,
-        payer_account_id: '0.0.123',
-        message: invalidJson
-      };
-      const result = mirrorNodeService.parseInvoiceMessage(mockMessage);
-      expect(result).toBeNull();
+    it('should handle empty message array', () => {
+      const result = mirrorNodeService.parseInvoiceMessages([]);
+      expect(result).toHaveLength(0);
     });
   });
 
@@ -221,7 +229,9 @@ describe('MirrorNodeService', () => {
       (mockAxiosInstance.get as jest.Mock).mockRejectedValue(new Error('Network error'));
       (mockCacheService.get as jest.Mock).mockReturnValue(null);
 
-      await expect(mirrorNodeService.getNftsByTokenId('0.0.123456')).rejects.toThrow('Network error');
+      const result = await mirrorNodeService.getNFTsByToken('0.0.123456');
+      
+      expect(result).toEqual([]);
       expect(mockLogger.error).toHaveBeenCalled();
     });
   });

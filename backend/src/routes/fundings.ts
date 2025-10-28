@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyPluginOptions, FastifyRequest, FastifyReply } from 'fastify';
-import { authenticate, requireRole, UserRole } from '../middleware/auth';
+import { walletJwtGuard, walletSupplierGuard, walletInvestorGuard, walletAdminGuard } from '../middleware/auth.middleware';
 import { validate, fundingSchemas, paramSchemas } from '../middleware/validation';
-import { fundingService, CreateFundingSchema } from '../services/fundingService';
+import { fundingService, CreateFundingSchema, WalletFundingSchema } from '../services/fundingService';
 import { auditLogger } from '../utils/logger';
 import { NotFoundError } from '../middleware/errorHandler';
 
@@ -11,13 +11,13 @@ export async function fundingRoutes(
 ): Promise<void> {
   // Get all fundings
   fastify.get('/', {
-    preHandler: [authenticate, requireRole([UserRole.ADMIN, UserRole.SUPPLIER, UserRole.INVESTOR])]
+    preHandler: [walletJwtGuard]
   }, async (request, reply) => {
     try {
       const fundings = await fastify.prisma.funding.findMany({
         include: {
           invoice: true,
-          investor: { select: { id: true, name: true, email: true, hederaAccountId: true } },
+          investor: { select: { id: true, name: true, email: true, accountId: true } },
         },
         orderBy: { createdAt: 'desc' },
       });
@@ -30,7 +30,7 @@ export async function fundingRoutes(
 
   // Get funding by ID with escrow details
   fastify.get('/:id', {
-    preHandler: [authenticate, requireRole([UserRole.ADMIN, UserRole.SUPPLIER, UserRole.INVESTOR])]
+    preHandler: [walletJwtGuard]
   }, async (request, reply) => {
     try {
       const { id } = request.params as { id: string };
@@ -48,7 +48,9 @@ export async function fundingRoutes(
   });
 
   // Get fundings by invoice ID
-  fastify.get('/invoice/:invoiceId', async (request, reply) => {
+  fastify.get('/invoice/:invoiceId', {
+    preHandler: [walletJwtGuard]
+  }, async (request, reply) => {
     try {
       const { invoiceId } = request.params as { invoiceId: string };
       const fundings = await fundingService.getFundingsByInvoice(invoiceId);
@@ -61,7 +63,7 @@ export async function fundingRoutes(
 
   // Create funding with smart contract escrow
   fastify.post('/', {
-    preHandler: [authenticate, requireRole([UserRole.ADMIN, UserRole.INVESTOR]), validate(fundingSchemas.create)]
+    preHandler: [walletInvestorGuard, validate(fundingSchemas.create)]
   }, async (request, reply) => {
     try {
       const validatedData = CreateFundingSchema.parse(request.body);
@@ -90,7 +92,7 @@ export async function fundingRoutes(
 
   // Release escrow (when invoice is paid)
   fastify.post('/:id/release', {
-    preHandler: [authenticate, requireRole([UserRole.ADMIN, UserRole.INVESTOR])]
+    preHandler: [walletInvestorGuard]
   }, async (request, reply) => {
     try {
       const { id } = request.params as { id: string };
@@ -115,30 +117,88 @@ export async function fundingRoutes(
     }
   });
 
-  // Refund escrow (if invoice is overdue or cancelled)
-  fastify.post('/:id/refund', {
-    preHandler: [authenticate, requireRole([UserRole.ADMIN, UserRole.INVESTOR])]
+  // Note: Refund functionality is not available in the current contract implementation
+  
+  // Wallet-based funding endpoints
+  fastify.post('/fundings/wallet/prepare', {
+    schema: {
+      body: {
+        type: 'object',
+        required: ['invoiceId', 'investorId', 'amount', 'supplierAccountId', 'walletAccountId'],
+        properties: {
+          invoiceId: { type: 'string' },
+          investorId: { type: 'string' },
+          amount: { type: 'string' },
+          supplierAccountId: { type: 'string' },
+          nftSerialNumber: { type: 'number' },
+          walletAccountId: { type: 'string' },
+        }
+      }
+    }
   }, async (request, reply) => {
     try {
-      const { id } = request.params as { id: string };
-      const result = await fundingService.refundEscrow(id);
+      const data = WalletFundingSchema.parse(request.body);
       
-      return {
-        message: 'Escrow refunded successfully',
-        transactionHash: result.transactionHash,
-        proofLinks: {
-          transaction: `https://hashscan.io/testnet/transaction/${result.transactionHash}`,
-          contract: `https://hashscan.io/testnet/contract/${process.env['ESCROW_CONTRACT_ADDRESS']}`,
-        },
-      };
+      const preparedTx = await fundingService.prepareFundingTransaction(data);
+      
+      return reply.code(200).send({
+        success: true,
+        data: preparedTx,
+        message: 'Transaction prepared for wallet signing'
+      });
     } catch (error) {
-      auditLogger.logBusiness({ operation: 'refund', entityType: 'funding', entityId: '', success: false });
-      
-      if (error instanceof Error) {
-        return reply.code(400).send({ error: error.message });
+      logger.error('Failed to prepare funding transaction', { error: error instanceof Error ? error.message : String(error) });
+      return reply.code(400).send({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to prepare transaction'
+      });
+    }
+  });
+  
+  fastify.post('/fundings/wallet/submit', {
+    schema: {
+      body: {
+        type: 'object',
+        required: ['invoiceId', 'investorId', 'amount', 'supplierAccountId', 'walletAccountId', 'signedTransactionBytes'],
+        properties: {
+          invoiceId: { type: 'string' },
+          investorId: { type: 'string' },
+          amount: { type: 'string' },
+          supplierAccountId: { type: 'string' },
+          nftSerialNumber: { type: 'number' },
+          walletAccountId: { type: 'string' },
+          signedTransactionBytes: { type: 'string' },
+        }
       }
+    }
+  }, async (request, reply) => {
+    try {
+      const data = WalletFundingSchema.parse(request.body);
       
-      return reply.code(500).send({ error: 'Failed to refund escrow' });
+      const result = await fundingService.createFundingWithWallet(data);
+      
+      return reply.code(201).send({
+        success: true,
+        data: {
+          funding: result.funding,
+          escrowId: result.escrowId,
+          transactionHash: result.transactionHash,
+          hcsMessageId: result.hcsMessageId,
+          proofLinks: result.proofLinks,
+        },
+        message: 'Funding created successfully via wallet',
+        links: {
+          transaction: result.proofLinks.transaction,
+          contract: result.proofLinks.contract,
+          mirrorNode: result.proofLinks.mirrorNode,
+        }
+      });
+    } catch (error) {
+      logger.error('Failed to create wallet funding', { error: error instanceof Error ? error.message : String(error) });
+      return reply.code(400).send({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to create funding'
+      });
     }
   });
 }
